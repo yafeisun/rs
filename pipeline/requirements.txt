@@ -1,0 +1,8 @@
+av
+numpy
+opencv-python
+open3d
+pycryptodome
+python-gnupg
+pyyaml
+tqdm
