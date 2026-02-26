@@ -650,12 +650,22 @@ def convert_pose_offline() -> int:
     if not pose_dict:
         return 0
 
-    target_dir = os.path.join(TARGET_DIR, "sensor_data/egopose_opt")
     target_json = os.path.join(TARGET_DIR, "sensor_data/egopose_opt.json")
     print(f"  [Pose Offline] Src: {src_path}")
     print(f"                 Dst: {target_json}")
 
-    convert_pose_from_dict(pose_dict, "sensor_data/egopose_opt", "sensor_data/egopose_opt.json")
+    # 只生成 JSON 文件，不生成单独的 JSON 文件
+    sorted_timestamps = sorted(pose_dict.keys(), key=lambda x: int(x))
+    pose_messages = []
+
+    for seq, timestamp_ns in enumerate(sorted_timestamps):
+        msg = create_pose_message(timestamp_ns, pose_dict[timestamp_ns])
+        msg["header"]["seq"] = seq
+        msg["meta"]["seq"] = seq
+        pose_messages.append(msg)
+
+    with open(target_json, 'w') as f:
+        json.dump(pose_messages, f, indent=2)
     return len(pose_dict)
 
 # =============================================================================
@@ -1313,6 +1323,143 @@ def generate_node_output() -> None:
     print(f"               Done: {matched_count} frames mapped")
 
 
+def generate_camera_poses() -> None:
+    """
+    从 result/test_calibration/cam_xxx/sync_sensors.txt 生成 sensor_data/egopose_opt/camera_xxx/*.json
+    
+    每个相机文件夹的 sync_sensors.txt 格式:
+    #index timestamp x y z q_x q_y q_z q_w
+    1 1764310903495000000.jpeg -0.229947 1.151212 -1.999342 0.009042 0.008805 0.753082 0.657805
+    """
+    test_calibration_dir = os.path.join(SRC_BAG_DIR, "result/test_calibration")
+    
+    if not os.path.exists(test_calibration_dir):
+        return
+    
+    # 相机名称映射 (cam_xxx -> camera_xxx)
+    camera_name_map = {
+        "cam_around_back": "camera_rear_fisheye",
+        "cam_around_front": "camera_front_fisheye",
+        "cam_around_left": "camera_left_fisheye",
+        "cam_around_right": "camera_right_fisheye",
+        "cam_back": "camera_rear_mid",
+        "cam_front_left": "camera_front_far",
+        "cam_front_right": "camera_front_wide",
+        "cam_side_left_back": "camera_left_rear",
+        "cam_side_left_front": "camera_left_front",
+        "cam_side_right_back": "camera_right_rear",
+        "cam_side_right_front": "camera_right_front",
+    }
+    
+    total_files = 0
+    total_poses = 0
+    
+    for cam_src_name, cam_target_name in camera_name_map.items():
+        sync_sensors_file = os.path.join(test_calibration_dir, cam_src_name, "sync_sensors.txt")
+        
+        if not os.path.exists(sync_sensors_file):
+            continue
+        
+        # 读取 sync_sensors.txt
+        poses = {}
+        try:
+            with open(sync_sensors_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    
+                    parts = line.split()
+                    if len(parts) >= 9:
+                        try:
+                            # 格式: index timestamp x y z q_x q_y q_z q_w
+                            timestamp_str = parts[1].replace('.jpeg', '')
+                            timestamp_ns = int(timestamp_str)
+                            x, y, z = float(parts[2]), float(parts[3]), float(parts[4])
+                            qx, qy, qz, qw = float(parts[5]), float(parts[6]), float(parts[7]), float(parts[8])
+                            
+                            poses[timestamp_ns] = [x, y, z, qx, qy, qz, qw]
+                        except (ValueError, IndexError):
+                            continue
+        except Exception:
+            continue
+        
+        if not poses:
+            continue
+        
+        # 生成 JSON 文件
+        target_dir = os.path.join(TARGET_DIR, "sensor_data/egopose_opt", cam_target_name)
+        create_directory(target_dir)
+        
+        for timestamp_ns, pose_data in poses.items():
+            msg = create_pose_message(str(timestamp_ns), pose_data)
+            
+            filepath = os.path.join(target_dir, f"{timestamp_ns}.json")
+            with open(filepath, 'w') as f:
+                json.dump(msg, f, indent=2)
+            total_poses += 1
+        
+        total_files += 1
+    
+    if total_files > 0:
+        print(f"  [CameraPoses] Src: {test_calibration_dir}/cam_*/sync_sensors.txt")
+        print(f"               Dst: {TARGET_DIR}/sensor_data/egopose_opt/camera_*/")
+        print(f"               Done: {total_files} cameras, {total_poses} poses")
+
+
+def generate_lidar_main_pose() -> None:
+    """
+    从 result/test_calibration/middle/sync_sensors.txt 生成 sensor_data/egopose_opt/egopose_optpose/*.json
+    主雷达位姿
+    """
+    middle_sync_file = os.path.join(SRC_BAG_DIR, "result/test_calibration/middle/sync_sensors.txt")
+
+    if not os.path.exists(middle_sync_file):
+        return
+
+    # 读取 sync_sensors.txt
+    poses = {}
+    try:
+        with open(middle_sync_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+
+                parts = line.split()
+                if len(parts) >= 9:
+                    try:
+                        # 格式: index timestamp x y z q_x q_y q_z q_w
+                        timestamp_str = parts[1].replace('.jpeg', '')
+                        timestamp_ns = int(timestamp_str)
+                        x, y, z = float(parts[2]), float(parts[3]), float(parts[4])
+                        qx, qy, qz, qw = float(parts[5]), float(parts[6]), float(parts[7]), float(parts[8])
+
+                        poses[timestamp_ns] = [x, y, z, qx, qy, qz, qw]
+                    except (ValueError, IndexError):
+                        continue
+    except Exception:
+        return
+
+    if not poses:
+        return
+
+    # 生成 JSON 文件
+    target_dir = os.path.join(TARGET_DIR, "sensor_data/egopose_opt/egopose_optpose")
+    create_directory(target_dir)
+
+    for timestamp_ns, pose_data in poses.items():
+        msg = create_pose_message(str(timestamp_ns), pose_data)
+
+        filepath = os.path.join(target_dir, f"{timestamp_ns}.json")
+        with open(filepath, 'w') as f:
+            json.dump(msg, f, indent=2)
+
+    print(f"  [LidarMainPose] Src: {middle_sync_file}")
+    print(f"                 Dst: {target_dir}/")
+    print(f"                 Done: {len(poses)} poses")
+
+
 def find_valid_bag_dirs(root_path: str) -> List[str]:
     """
     递归查找符合时间戳格式且包含 bag 文件的有效目录
@@ -1381,6 +1528,12 @@ def process_single_bag(src_dir: str, target_root: str) -> bool:
 
         # 生成 node_output
         generate_node_output()
+
+        # 生成相机位姿
+        generate_camera_poses()
+
+        # 生成主雷达位姿
+        generate_lidar_main_pose()
 
         # 第二部分：Pose数据
         convert_pose_online()
@@ -1470,6 +1623,6 @@ if __name__ == "__main__":
     
     valid_dirs = find_valid_bag_dirs("/home/lenovo/Documents/0203select")
     target_root = "/home/lenovo/Documents/0203select_output"
-    valid_dirs = valid_dirs[0:3]
+    valid_dirs = valid_dirs[0:1]
     for bag in valid_dirs:
         process_single_bag(bag, target_root)
