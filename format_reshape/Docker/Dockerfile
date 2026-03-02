@@ -5,11 +5,12 @@ RUN apt-get update && apt-get install -y \
     python3-yaml \
     python3-numpy \
     python3-pip \
+    python3-opencv \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装额外的 Python 包（如果需要）
-RUN pip3 install pyyaml numpy
-
+# 安装额外的 Python 包
+RUN pip3 install pyyaml numpy opencv-python
 # 创建非 root 用户（与宿主机用户匹配）
 RUN groupadd -g 1000 geely && \
     useradd -u 1000 -g geely -s /bin/bash -m geely && \
@@ -19,11 +20,8 @@ RUN groupadd -g 1000 geely && \
 # 设置工作目录
 WORKDIR /workspace
 
-# 复制脚本并设置权限
-COPY --chown=geely:geely reshape.py /workspace/
-
 # 切换到非 root 用户
 USER geely
 
-# 默认命令
-CMD ["python3", "reshape.py"]
+# 默认命令（可以通过volume挂载代码）
+CMD ["/bin/bash"]
