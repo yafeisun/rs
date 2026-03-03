@@ -2,12 +2,12 @@
 """
 点云到图像投影验证脚本
 
-完全参考 robosense/jiaxin/sensor_sync_data/process_data.py 的实现逻辑:
-- 所有相机: 图像不去畸变
-- 7V 普通相机 (不含 fisheye): 使用 point_project (不带畸变系数的针孔投影)
+投影逻辑:
+- 7V 普通相机 (不含 fisheye): EA-LSS 去畸变 (alpha=0.3) 后用针孔投影
+  参考: EA-LSS/tools/datautil/convert_and_save.py undistort_and_save_img
 - 4V 鱼眼相机 (含 fisheye): 使用 point_project_distort (cv2.fisheye.projectPoints)
 
-坐标系: 点云是 Body FLU 坐标系，标定参数已转换到 FLU
+坐标系: 点云是 Body FLU 坐标系，extrinsic 是 T_b2c (body_FLU -> camera)
 """
 
 import os
@@ -66,23 +66,6 @@ def load_pcd(pcd_path: str) -> np.ndarray:
     return points
 
 
-def load_yaml_params(calib: dict) -> dict:
-    """
-    从 YAML 构建投影参数 (用于判断相机类型和分辨率)
-    
-    Args:
-        calib: YAML 标定数据
-    
-    Returns:
-        包含 is_fisheye, width, height 的字典
-    """
-    return {
-        "is_fisheye": calib.get("is_fisheye", False),
-        "width": int(calib.get("width", 1920)),
-        "height": int(calib.get("height", 1280)),
-    }
-
-
 def load_json_params(calib_json: dict) -> dict:
     """
     从 JSON (calib_anno 或 calib_anno_vc) 加载投影参数
@@ -107,50 +90,6 @@ def load_json_params(calib_json: dict) -> dict:
         "extr": extrinsic,  # T_b2c，直接使用，无需取逆
         "D": D,
         "is_fisheye": is_fisheye,
-    }
-    """
-    构建投影参数 (参考 process_data.py load_params)
-    
-    YAML 中 r_s2b, t_s2b 是 camera_to_body (FLU)
-    投影需要 body_to_camera = inv(camera_to_body)
-    """
-    # 内参
-    fx = float(calib.get("fx", 1000))
-    fy = float(calib.get("fy", 1000))
-    cx = float(calib.get("cx", 960))
-    cy = float(calib.get("cy", 540))
-    intr = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
-    
-    # 畸变系数
-    D = np.array([
-        float(calib.get("kc2", 0)),
-        float(calib.get("kc3", 0)),
-        float(calib.get("kc4", 0)),
-        float(calib.get("kc5", 0)),
-    ], dtype=np.float64)
-    
-    # 外参: r_s2b, t_s2b 是 camera_to_body
-    # 需要求逆得到 body_to_camera
-    r_s2b = np.array(calib.get("r_s2b", [0, 0, 0]), dtype=np.float64)
-    t_s2b = np.array(calib.get("t_s2b", [0, 0, 0]), dtype=np.float64)
-    
-    R_cam2body, _ = cv2.Rodrigues(r_s2b)
-    
-    # 构建 4x4 外参矩阵 (camera_to_body)
-    extr_cam2body = np.eye(4, dtype=np.float64)
-    extr_cam2body[:3, :3] = R_cam2body
-    extr_cam2body[:3, 3] = t_s2b
-    
-    # 求逆得到 body_to_camera
-    extr = np.linalg.inv(extr_cam2body)
-    
-    return {
-        "intr": intr,
-        "extr": extr,  # body_to_camera
-        "D": D,
-        "width": int(calib.get("width", 1920)),
-        "height": int(calib.get("height", 1280)),
-        "is_fisheye": calib.get("is_fisheye", False),
     }
 
 
@@ -268,41 +207,67 @@ def point_project_distort(coords, image, intr, extr, D):
     return points_proj[valid], zzz[valid]
 
 
-def process_frame(data_dir: str, output_dir: str, ts: str, 
+def undistort_image(img: np.ndarray, intr: np.ndarray, D: np.ndarray,
+                    width: int, height: int):
+    """
+    EA-LSS 去畸变 (参考 EA-LSS/tools/datautil/convert_and_save.py)
+    适用于 7V 普通相机 (非鱼眼)
+
+    Returns:
+        undistorted_img: 去畸变后的图像
+        new_intr: 去畸变后的新内参矩阵 (3x3)
+    """
+    alpha = 0.3
+    new_intr, _ = cv2.getOptimalNewCameraMatrix(
+        intr, D[:4], (width, height), alpha
+    )
+    map1, map2 = cv2.fisheye.initUndistortRectifyMap(
+        intr, D[:4], None, new_intr, (width, height), cv2.CV_16SC2
+    )
+    undistorted = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LINEAR)
+    return undistorted, new_intr
+
+
+def process_frame(data_dir: str, output_dir: str, ts: str,
                   cam_mapping: dict, camera_params: dict, points: np.ndarray):
-    """处理单帧数据 (参考 process_data.py visualize_pcd)"""
+    """处理单帧数据"""
     frame_out = os.path.join(output_dir, ts)
     os.makedirs(frame_out, exist_ok=True)
-    
+
     for cam_name, params in camera_params.items():
         if cam_name not in cam_mapping:
             continue
-        
+
         img_filename = cam_mapping[cam_name]
         img_path = os.path.join(data_dir, "sensor_data/camera", cam_name, img_filename)
-        
+
         if not os.path.exists(img_path):
             continue
-        
+
         img = cv2.imread(img_path)
         if img is None:
             continue
-        
-        # 判断是否是鱼眼相机 (与速腾 "a_" in cam 逻辑对应)
+
+        # 判断是否是鱼眼相机
         is_fisheye = params["is_fisheye"] or "fisheye" in cam_name
-        
-        # 内参矩阵 4x4
-        intr_4x4 = np.identity(4)
-        intr_4x4[:3, :3] = params["intr"]
-        extr = params["extr"]  # body_to_camera
+
+        extr = params["extr"]  # T_b2c
         D = params["D"]
-        
-        # 投影 (与速腾逻辑一致: undistort_flag=False)
+
         if is_fisheye:
+            # 鱼眼: 直接用 cv2.fisheye.projectPoints
+            intr_4x4 = np.identity(4)
+            intr_4x4[:3, :3] = params["intr"]
             coords, zzz = point_project_distort(
                 copy.deepcopy(points), img, intr_4x4, extr, D
             )
         else:
+            # 7V 普通相机: EA-LSS 去畸变后再用针孔投影
+            width = params.get("width", img.shape[1])
+            height = params.get("height", img.shape[0])
+            img, new_intr = undistort_image(img, params["intr"], D, width, height)
+            intr_4x4 = np.identity(4)
+            intr_4x4[:3, :3] = new_intr
             coords, zzz = point_project(
                 copy.deepcopy(points), img, intr_4x4, extr
             )
@@ -361,16 +326,15 @@ def main():
 
     # 加载相机参数 - 根据相机类型从不同来源加载
     camera_params = {}
-    
+
     # 从 YAML 获取相机基本信息 (用于判断类型和分辨率)
     calib_yaml_dir = os.path.join(data_dir, "calibration/camera")
-    
-    # 鱼眼相机: 从 calib_anno 加载 (未去畸变)
-    fisheye_dir = os.path.join(data_dir, "calib_anno")
-    
-    # 普通相机: 从 calib_anno_vc 加载 (已去畸变)
-    normal_dir = os.path.join(data_dir, "calib_anno_vc")
-    
+
+    # 所有相机均从 calib_anno 加载:
+    # - 鱼眼: 含原始畸变系数，直接用于 cv2.fisheye.projectPoints
+    # - 普通: 含原始畸变系数，用于 EA-LSS 去畸变 (alpha=0.3) 后再投影
+    calib_anno_dir = os.path.join(data_dir, "calib_anno")
+
     fisheye_cams = []
     normal_cams = []
     
@@ -389,7 +353,7 @@ def main():
                 
                 if is_fisheye:
                     # 鱼眼相机: 从 calib_anno/*.json 加载
-                    json_path = os.path.join(fisheye_dir, f"{cam_name}.json")
+                    json_path = os.path.join(calib_anno_dir, f"{cam_name}.json")
                     if os.path.exists(json_path):
                         with open(json_path, 'r') as j_file:
                             calib_json = json.load(j_file)
@@ -399,14 +363,15 @@ def main():
                         camera_params[cam_name] = params
                         fisheye_cams.append(cam_name)
                 else:
-                    # 普通相机: 从 calib_anno_vc/*.json 加载
-                    json_path = os.path.join(normal_dir, f"{cam_name}.json")
+                    # 普通相机: 从 calib_anno/*.json 加载 (含原始畸变系数，用于 EA-LSS 去畸变)
+                    json_path = os.path.join(calib_anno_dir, f"{cam_name}.json")
                     if os.path.exists(json_path):
                         with open(json_path, 'r') as j_file:
                             calib_json = json.load(j_file)
                         params = load_json_params(calib_json)
                         params["width"] = int(calib_yaml.get("width", 1920))
                         params["height"] = int(calib_yaml.get("height", 1280))
+                        params["is_fisheye"] = False
                         camera_params[cam_name] = params
                         normal_cams.append(cam_name)
     
