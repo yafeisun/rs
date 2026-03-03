@@ -115,8 +115,17 @@ def extract_lidar_pcd(src_bag_dir: str, target_dir: str) -> None:
 
 def extract_lidar_concat(src_bag_dir: str, target_dir: str) -> None:
     """
-    从 result/test_calibration/middle/*.pcd 生成 sensor_data/lidar/lidar_concat/*.pcd
-    并将点云精确旋转到 Body FLU 坐标系。
+    从 result/test_calibration/middle/*.pcd 读取并转换坐标系后写入
+    sensor_data/lidar/lidar_concat/*.pcd
+
+    源 PCD 是 Body RFU 坐标系（速腾车体系：Y前、X右、Z上）。
+    目标格式要求 Body FLU（X前、Y左、Z上），即 lidar_concat.yaml 中
+    r_s2b=[0,0,0]、t_s2b=[0,0,0] 所定义的与车体系重合的坐标系。
+
+    变换: R_rfu2flu = [[0,1,0],[-1,0,0],[0,0,1]]
+      x_flu =  y_rfu  (前方)
+      y_flu = -x_rfu  (左方)
+      z_flu =  z_rfu  (上方，不变)
     """
     src_dir = os.path.join(src_bag_dir, LIDAR_CONCAT_SRC)
     main_sync_file = os.path.join(
@@ -125,55 +134,43 @@ def extract_lidar_concat(src_bag_dir: str, target_dir: str) -> None:
     if not os.path.exists(src_dir) or not os.path.exists(main_sync_file):
         return
 
-    frame_to_timestamp = {}
+    # Read timestamps from sync_sensors.txt (column 2 = /middle timestamp)
+    timestamps = []
     with open(main_sync_file, "r") as f:
         for line in f:
             if line.startswith("#") or not line.strip():
                 continue
             parts = line.split()
             if len(parts) >= 2:
-                frame_to_timestamp[int(parts[0])] = parts[1]
+                timestamps.append(parts[1])  # Column 2 = /middle timestamp
 
-    # 获取精确旋转 R_lidar2flu
-    R_align_inv = get_alignment_rotation()
-    src_yaml = find_calibration_yaml(src_bag_dir)
-    calib_all = read_yaml_file(src_yaml) if src_yaml else None
-
-    R_final = np.eye(3)
-    if calib_all and "sensors" in calib_all and "lidar" in calib_all["sensors"]:
-        for lidar_data in calib_all["sensors"]["lidar"]:
-            if lidar_data.get("topic") == "/middle/rslidar_packets_unique":
-                cal = lidar_data.get("calibration", {})
-                rvec = euler_to_rotation_vector(
-                    cal.get("roll", 0), cal.get("pitch", 0), cal.get("yaw", 0)
-                )
-                R_lidar2rfu, _ = cv2.Rodrigues(np.array(rvec))
-                R_final = R_align_inv @ R_lidar2rfu
-                break
+    # Get all PCD files and sort them numerically
+    pcd_files = sorted(glob.glob(os.path.join(src_dir, "*.pcd")),
+                       key=lambda x: int(os.path.basename(x).replace(".pcd", "")))
 
     target_path = os.path.join(target_dir, LIDAR_CONCAT_DST)
     create_directory(target_path)
-    pcd_files = sorted(glob.glob(os.path.join(src_dir, "*.pcd")))
+
+    # RFU -> FLU rotation matrix: [[0,1,0],[-1,0,0],[0,0,1]]
+    R_rfu2flu = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], dtype=np.float64)
+    T_rfu2flu = np.eye(4)
+    T_rfu2flu[:3, :3] = R_rfu2flu
+
     copied = 0
-
-    for pcd_file in pcd_files:
+    for i, pcd_file in enumerate(pcd_files):
+        if i >= len(timestamps):
+            break
         try:
-            frame_num = int(os.path.basename(pcd_file).replace(".pcd", ""))
-            if frame_num in frame_to_timestamp:
-                new_path = os.path.join(
-                    target_path, frame_to_timestamp[frame_num] + ".pcd"
-                )
-                points, header = read_pcd_binary(pcd_file)
-                T_rot = np.eye(4)
-                T_rot[:3, :3] = R_final
-                points_transformed = transform_point_cloud(points, T_rot)
-                write_pcd_binary(new_path, points_transformed, header)
-                copied += 1
-        except Exception:
-            pass
-    print(f"  [LiDAR Concat] Done: {copied} files (Aligned to Body FLU)")
-
-
+            timestamp = timestamps[i]
+            new_path = os.path.join(target_path, timestamp + ".pcd")
+            # Read, transform RFU->FLU, write
+            points, header = read_pcd_binary(pcd_file)
+            points = transform_point_cloud(points, T_rfu2flu)
+            write_pcd_binary(new_path, points, header)
+            copied += 1
+        except Exception as e:
+            print(f"  [LiDAR Concat] Error {pcd_file}: {e}")
+    print(f"  [LiDAR Concat] Done: {copied} files (Body RFU -> Body FLU)")
 def extract_lidar_map(src_bag_dir: str, target_dir: str) -> None:
     """拷贝 lidar 地图"""
     src_path = os.path.join(src_bag_dir, LIDAR_MAP_SRC)

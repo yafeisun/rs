@@ -86,28 +86,25 @@ def load_yaml_params(calib: dict) -> dict:
 def load_json_params(calib_json: dict) -> dict:
     """
     从 JSON (calib_anno 或 calib_anno_vc) 加载投影参数
-    
-    Args:
-        calib_json: JSON 标定数据，包含 extrinsic, intrinsic, distcoeff
-    
-    Returns:
-        包含 intr, extr, D, width, height 的字典
+
+    JSON 中的 extrinsic 是 4x4 body_FLU -> camera 矩阵 (T_b2c)，
+    可直接用于将 Body FLU 点云变换到相机坐标系，无需取逆。
     """
-    # 外参: JSON 中的 extrinsic 是 4x4 camera_to_body 矩阵
+    # 外参: JSON 中的 extrinsic 已经是 T_b2c (body_FLU -> camera)
     extrinsic = np.array(calib_json["extrinsic"], dtype=np.float64).reshape(4, 4)
-    
+
     # 内参
     intrinsic = np.array(calib_json["intrinsic"], dtype=np.float64).reshape(3, 3)
-    
+
     # 畸变系数
     D = np.array(calib_json["distcoeff"], dtype=np.float64)
-    
+
     # 判断是否是鱼眼 (通过畸变系数判断)
     is_fisheye = not np.allclose(D, 0.0)
-    
+
     return {
         "intr": intrinsic,
-        "extr": np.linalg.inv(extrinsic),  # body_to_camera
+        "extr": extrinsic,  # T_b2c，直接使用，无需取逆
         "D": D,
         "is_fisheye": is_fisheye,
     }
@@ -441,11 +438,8 @@ def main():
                (np.abs(points[:, 2]) <= 50)
         points = points[flag]
 
-        # 坐标系转换: 点云是 Body RFU (Y前X右Z上), 标定外参是 Body FLU (X前Y左Z上)
-        # R_rfu2flu = [[0,1,0],[-1,0,0],[0,0,1]]
-        R_rfu2flu = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], dtype=np.float32)
-        points = (R_rfu2flu @ points.T).T
-
+        # lidar_concat PCD 已是 Body FLU 坐标系，calib_anno extrinsic 已是 T_b2c，
+        # 无需额外坐标变换，直接投影。
         process_frame(data_dir, output_root, frame_ts, cam_mapping, camera_params, points)
 
     print(f"    Output: {output_root}")
