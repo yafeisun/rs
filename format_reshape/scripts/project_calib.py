@@ -1,356 +1,454 @@
 #!/usr/bin/env python3
 """
-点云到图像投影验证脚本 (修复版)
-用于验证从速腾 (Robosense) 转换到目标格式后的数据投影。
+点云到图像投影验证脚本
 
-6. 4路鱼眼相机保持原图投影 (使用 fisheye 模型)。
-7. 剩下的7路普通相机在投影前进行实时去畸变处理 (参考 EA-LSS 逻辑)，并使用新内参投影。
+完全参考 robosense/jiaxin/sensor_sync_data/process_data.py 的实现逻辑:
+- 所有相机: 图像不去畸变
+- 7V 普通相机 (不含 fisheye): 使用 point_project (不带畸变系数的针孔投影)
+- 4V 鱼眼相机 (含 fisheye): 使用 point_project_distort (cv2.fisheye.projectPoints)
+
+坐标系: 点云是 Body FLU 坐标系，标定参数已转换到 FLU
 """
-
 
 import os
 import sys
-import json
 import argparse
-from pathlib import Path
-
+import json
+import copy
 import numpy as np
 import cv2
 import yaml
 
 
+# 深度限制 - 与速腾 process_data.py 一致
+SHOW_DEPTH = 150  # 全局默认值，实际使用时会根据相机类型调整
+
+
 def load_pcd(pcd_path: str) -> np.ndarray:
-    """加载 PCD 文件"""
+    """Load point cloud from PCD file (supports structured binary)"""
     with open(pcd_path, "rb") as f:
-        header_lines = []
+        header = {}
         while True:
             line = f.readline()
-            if line.startswith(b"DATA"):
+            if not line:
                 break
-            header_lines.append(line.decode("utf-8"))
-
-        point_num = 0
-        for line in header_lines:
-            if "POINTS" in line:
-                point_num = int(line.split()[1])
+            try:
+                line = line.decode("ascii").strip()
+            except UnicodeDecodeError:
+                continue
+            if line.startswith("DATA"):
+                data_start = f.tell()
                 break
+            parts = line.split()
+            if len(parts) >= 2:
+                header[parts[0]] = " ".join(parts[1:])
 
-        data = np.fromfile(f, dtype=np.float32)[: point_num * 4]
-        points = data.reshape(-1, 4)[:, :3]
+        fields = header.get("FIELDS", "x y z intensity").split()
+        sizes = list(map(int, header.get("SIZE", "4 4 4 4").split()))
+        types = header.get("TYPE", "F F F F").split()
+
+        type_map = {"F": np.float32, "I": np.int32, "U": np.uint8, "L": np.uint64}
+        dtype_parts = []
+        for i, field in enumerate(fields):
+            np_type = type_map.get(types[i], np.float32)
+            dtype_parts.append((field, np_type))
+
+        dtype = np.dtype(dtype_parts)
+        num_points = int(header.get("POINTS", "0"))
+
+        f.seek(data_start)
+        data = np.fromfile(f, dtype=dtype, count=num_points)
+
+    points = np.zeros((len(data), 3), dtype=np.float32)
+    for i, field in enumerate(fields[:3]):
+        points[:, i] = data[field]
 
     return points
 
 
-def load_camera_calib_yaml(yaml_path: str) -> dict:
-    """加载相机标定 YAML"""
-    with open(yaml_path, "r") as f:
-        content = f.read()
-
-    if content.startswith("%YAML"):
-        content = content.split("---", 1)[-1]
-
-    calib = yaml.safe_load(content)
-
+def load_yaml_params(calib: dict) -> dict:
+    """
+    从 YAML 构建投影参数 (用于判断相机类型和分辨率)
+    
+    Args:
+        calib: YAML 标定数据
+    
+    Returns:
+        包含 is_fisheye, width, height 的字典
+    """
     return {
-        "sensor_name": calib.get("sensor_name", ""),
-        "r_s2b": np.array(calib.get("r_s2b", [0, 0, 0])),  # Rodrigues vector
-        "t_s2b": np.array(calib.get("t_s2b", [0, 0, 0])),
-        "fx": calib.get("fx", 0),
-        "fy": calib.get("fy", 0),
-        "cx": calib.get("cx", 0),
-        "cy": calib.get("cy", 0),
-        "kc2": calib.get("kc2", 0),
-        "kc3": calib.get("kc3", 0),
-        "kc4": calib.get("kc4", 0),
-        "kc5": calib.get("kc5", 0),
         "is_fisheye": calib.get("is_fisheye", False),
-        "width": calib.get("width", 1920),
-        "height": calib.get("height", 1080),
+        "width": int(calib.get("width", 1920)),
+        "height": int(calib.get("height", 1280)),
     }
 
 
-def build_extrinsics_matrix(r_s2b: np.ndarray, t_s2b: np.ndarray) -> np.ndarray:
-    """构建 4x4 外参矩阵 (sensor -> body)"""
-    R, _ = cv2.Rodrigues(r_s2b)
-    t = np.array(t_s2b).flatten()
-
-    T = np.eye(4)
-    T[:3, :3] = R
-    T[:3, 3] = t
-
-    return T
-
-
-def project_points_to_camera(
-    points: np.ndarray,
-    T_body2cam: np.ndarray,
-    camera_calib: dict,
-    max_depth: float = 150,
-) -> tuple:
+def load_json_params(calib_json: dict) -> dict:
     """
-    将点云投影到相机图像
-    points: Nx3 点云 (假设已经是 Body FLU 坐标系)
+    从 JSON (calib_anno 或 calib_anno_vc) 加载投影参数
+    
+    Args:
+        calib_json: JSON 标定数据，包含 extrinsic, intrinsic, distcoeff
+    
+    Returns:
+        包含 intr, extr, D, width, height 的字典
     """
-    if len(points) == 0:
-        return np.array([]), np.array([]), np.array([])
-
-    # 1. 坐标变换: Body -> Camera
-    ones = np.ones((len(points), 1))
-    coords_hom = np.hstack([points, ones])
-    coords_cam = (T_body2cam @ coords_hom.T).T
-
-    # 2. 过滤相机前方点
-    valid_mask = coords_cam[:, 2] > 0
-    coords_cam = coords_cam[valid_mask]
-    if len(coords_cam) == 0:
-        return np.array([]), np.array([]), np.array([])
-
-    depths = coords_cam[:, 2].copy()
-
-    # 3. 过滤深度
-    depth_mask = depths < max_depth
-    coords_cam = coords_cam[depth_mask]
-    depths = depths[depth_mask]
-    if len(coords_cam) == 0:
-        return np.array([]), np.array([]), np.array([])
-
-    # 4. 投影到像素平面
-    K = np.array(
-        [
-            [camera_calib["fx"], 0, camera_calib["cx"]],
-            [0, camera_calib["fy"], camera_calib["cy"]],
-            [0, 0, 1],
-        ],
-        dtype=np.float64,
-    )
-
-    if camera_calib.get("is_fisheye", False):
-        # 鱼眼模型 (等距投影)
-        rvec_identity = np.zeros(3)
-        tvec_zero = np.zeros(3)
-        D = np.array(
-            [
-                camera_calib["kc2"],
-                camera_calib["kc3"],
-                camera_calib["kc4"],
-                camera_calib["kc5"],
-            ],
-            dtype=np.float64,
-        )
-
-        try:
-            pts_cam_3d = coords_cam[:, :3].astype(np.float64).reshape(-1, 1, 3)
-            pts_2d, _ = cv2.fisheye.projectPoints(
-                pts_cam_3d, rvec_identity, tvec_zero, K, D
-            )
-            pts_2d = pts_2d.reshape(-1, 2)
-            u, v = pts_2d[:, 0], pts_2d[:, 1]
-        except:
-            return np.array([]), np.array([]), np.array([])
-    else:
-        # 针孔模型
-        # 如果 kc2..kc5 全为 0，则是简单的线性投影
-        D = np.array(
-            [
-                camera_calib["kc2"],
-                camera_calib["kc3"],
-                camera_calib["kc4"],
-                camera_calib["kc5"],
-            ],
-            dtype=np.float64,
-        )
-        
-        if np.any(D != 0):
-            rvec_identity = np.zeros(3)
-            tvec_zero = np.zeros(3)
-            try:
-                pts_cam_3d = coords_cam[:, :3].astype(np.float64).reshape(-1, 1, 3)
-                pts_2d, _ = cv2.projectPoints(
-                    pts_cam_3d, rvec_identity, tvec_zero, K, D
-                )
-                pts_2d = pts_2d.reshape(-1, 2)
-                u, v = pts_2d[:, 0], pts_2d[:, 1]
-            except:
-                return np.array([]), np.array([]), np.array([])
-        else:
-            # 纯线性投影
-            x_norm = coords_cam[:, 0] / coords_cam[:, 2]
-            y_norm = coords_cam[:, 1] / coords_cam[:, 2]
-            u = K[0, 0] * x_norm + K[0, 2]
-            v = K[1, 1] * y_norm + K[1, 2]
-
-    # 5. 过滤图像边界
-    width, height = camera_calib["width"], camera_calib["height"]
-    valid = (u >= 0) & (u < width) & (v >= 0) & (v < height)
-
-    return u[valid], v[valid], depths[valid]
-
-
-def get_undistort_params(calib_data: dict) -> dict:
-    """计算去畸变参数 (参考 EA-LSS 逻辑)"""
-    intrinsic = np.array([
-        [calib_data["fx"], 0, calib_data["cx"]],
-        [0, calib_data["fy"], calib_data["cy"]],
-        [0, 0, 1]
-    ], dtype=np.float64)
-    D = np.array([
-        calib_data["kc2"], calib_data["kc3"], calib_data["kc4"], calib_data["kc5"]
-    ], dtype=np.float64)
-    img_width, img_height = calib_data["width"], calib_data["height"]
+    # 外参: JSON 中的 extrinsic 是 4x4 camera_to_body 矩阵
+    extrinsic = np.array(calib_json["extrinsic"], dtype=np.float64).reshape(4, 4)
     
-    alpha = 0.3
-    new_intrinsic, _ = cv2.getOptimalNewCameraMatrix(
-        intrinsic, D, (img_width, img_height), alpha
-    )
+    # 内参
+    intrinsic = np.array(calib_json["intrinsic"], dtype=np.float64).reshape(3, 3)
     
-    # 使用 fisheye.initUndistortRectifyMap (即使是针孔相机，EA-LSS 也统一使用了这个)
-    map1, map2 = cv2.fisheye.initUndistortRectifyMap(
-        intrinsic, D, None, new_intrinsic, (img_width, img_height), cv2.CV_16SC2
-    )
+    # 畸变系数
+    D = np.array(calib_json["distcoeff"], dtype=np.float64)
+    
+    # 判断是否是鱼眼 (通过畸变系数判断)
+    is_fisheye = not np.allclose(D, 0.0)
     
     return {
-        "new_intrinsic": new_intrinsic,
-        "map1": map1,
-        "map2": map2
+        "intr": intrinsic,
+        "extr": np.linalg.inv(extrinsic),  # body_to_camera
+        "D": D,
+        "is_fisheye": is_fisheye,
+    }
+    """
+    构建投影参数 (参考 process_data.py load_params)
+    
+    YAML 中 r_s2b, t_s2b 是 camera_to_body (FLU)
+    投影需要 body_to_camera = inv(camera_to_body)
+    """
+    # 内参
+    fx = float(calib.get("fx", 1000))
+    fy = float(calib.get("fy", 1000))
+    cx = float(calib.get("cx", 960))
+    cy = float(calib.get("cy", 540))
+    intr = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
+    
+    # 畸变系数
+    D = np.array([
+        float(calib.get("kc2", 0)),
+        float(calib.get("kc3", 0)),
+        float(calib.get("kc4", 0)),
+        float(calib.get("kc5", 0)),
+    ], dtype=np.float64)
+    
+    # 外参: r_s2b, t_s2b 是 camera_to_body
+    # 需要求逆得到 body_to_camera
+    r_s2b = np.array(calib.get("r_s2b", [0, 0, 0]), dtype=np.float64)
+    t_s2b = np.array(calib.get("t_s2b", [0, 0, 0]), dtype=np.float64)
+    
+    R_cam2body, _ = cv2.Rodrigues(r_s2b)
+    
+    # 构建 4x4 外参矩阵 (camera_to_body)
+    extr_cam2body = np.eye(4, dtype=np.float64)
+    extr_cam2body[:3, :3] = R_cam2body
+    extr_cam2body[:3, 3] = t_s2b
+    
+    # 求逆得到 body_to_camera
+    extr = np.linalg.inv(extr_cam2body)
+    
+    return {
+        "intr": intr,
+        "extr": extr,  # body_to_camera
+        "D": D,
+        "width": int(calib.get("width", 1920)),
+        "height": int(calib.get("height", 1280)),
+        "is_fisheye": calib.get("is_fisheye", False),
     }
 
-def get_color_pseudo(depth_val: float) -> tuple:
-    """参考 process_data.py 的伪彩色映射 (depth 0-255)"""
-    if depth_val < 32:
-        c = int(128 + 4 * depth_val)
-        return (c, 0, 0)
-    elif depth_val < 96:
-        c = int(4 + 4 * (depth_val - 32))
-        return (255, c, 0)
-    elif depth_val < 159:
+
+def get_color(depth: int) -> tuple:
+    """伪彩色 (参考 process_data.py)"""
+    if depth < 32:
+        return (128 + 4 * depth, 0, 0)
+    elif depth == 32:
+        return (255, 0, 0)
+    elif depth < 95:
+        return (255, 4 + 4 * depth, 0)
+    elif depth == 96:
         return (254, 255, 2)
-    elif depth_val < 223:
-        c = int(252 - 4 * (depth_val - 159))
-        return (0, c, 255)
-    else:
-        c = int(252 - 4 * (depth_val - 223))
-        return (0, 0, max(0, c))
+    elif depth < 158:
+        return (254, 255, 2)
+    elif depth == 159:
+        return (1, 255, 254)
+    elif depth < 223:
+        return (0, 252 - 4 * (depth - 159), 255)
+    elif depth < 255:
+        return (0, 0, 252 - 4 * (depth - 223))
+    return (0, 0, 0)
+
+
+def point_project(coords, image, M1, M2):
+    """
+    标准针孔投影 (不带畸变) - 完全参考 process_data.py point_project
+    
+    Args:
+        coords: Nx3 点云坐标 (body坐标系)
+        image: 图像 (用于获取分辨率)
+        M1: 4x4 内参矩阵
+        M2: 4x4 外参矩阵 (body_to_camera)
+        
+    Returns:
+        coords: Nx2 像素坐标
+        zzz: N 深度值 (未归一化)
+    """
+    resolution = image.shape
+    
+    # 转换到齐次坐标
+    ones = np.ones(len(coords)).reshape(-1, 1)
+    coords = np.concatenate([coords, ones], axis=1)
+    
+    # 变换到相机坐标系: cam_coords = extr @ body_coords (列向量形式)
+    transform = copy.deepcopy(M2).reshape(4, 4)
+    coords = (transform @ coords.T).T
+    
+    # 过滤深度 (使用全局 SHOW_DEPTH)
+    coords = coords[np.where((coords[:, 2] > 0) * (coords[:, 2] < SHOW_DEPTH))]
+    zzz = coords[:, 2].copy()
+    
+    if len(coords) == 0:
+        return None, None
+    
+    # 投影到像素坐标
+    coords = (M1 @ coords.T).T
+    coords[:, 0] /= coords[:, 2]
+    coords[:, 1] /= coords[:, 2]
+    coords[:, 2] = 1
+    
+    # 边界过滤
+    valid = (coords[:, 0] >= 0) & (coords[:, 0] < resolution[1]) & \
+            (coords[:, 1] >= 0) & (coords[:, 1] < resolution[0]) & (zzz > 0)
+    
+    return coords[valid], zzz[valid]
+
+
+def point_project_distort(coords, image, intr, extr, D):
+    """
+    鱼眼投影 (带畸变) - 完全参考 process_data.py point_project_distort
+    
+    Args:
+        coords: Nx3 点云坐标 (body坐标系)
+        image: 图像 (用于获取分辨率)
+        intr: 4x4 内参矩阵
+        extr: 4x4 外参矩阵 (body_to_camera)
+        D: 畸变系数
+        
+    Returns:
+        points: Nx2 像素坐标
+        zzz: N 深度值 (未归一化)
+    """
+    resolution = image.shape
+    points = copy.deepcopy(coords)
+    
+    # 转换到齐次坐标
+    ones = np.ones(len(coords)).reshape(-1, 1)
+    coords = np.concatenate([coords, ones], axis=1)
+    
+    # 变换到相机坐标系 (行向量形式: coords = points @ extr.T)
+    transform = copy.deepcopy(extr).reshape(4, 4)
+    coords = coords @ transform.T
+    
+    # 过滤深度 (使用全局 SHOW_DEPTH)
+    flag = np.where((coords[:, 2] > 0) * (coords[:, 2] < SHOW_DEPTH))
+    coords = coords[flag]
+    points = points[flag]
+    zzz = coords[:, 2].copy()
+    
+    if len(coords) == 0:
+        return None, None
+    
+    # 鱼眼投影
+    rvec = cv2.Rodrigues(extr[:3, :3])[0]
+    tvec = extr[:3, 3]
+    points_proj = cv2.fisheye.projectPoints(
+        points.reshape(-1, 1, 3), rvec, tvec, intr[:3, :3], D
+    )[0].reshape(-1, 2)
+    
+    # 边界过滤
+    valid = (zzz > 0) & (points_proj[:, 0] >= 0) & (points_proj[:, 0] < resolution[1]) & \
+            (points_proj[:, 1] >= 0) & (points_proj[:, 1] < resolution[0])
+    
+    return points_proj[valid], zzz[valid]
+
+
+def process_frame(data_dir: str, output_dir: str, ts: str, 
+                  cam_mapping: dict, camera_params: dict, points: np.ndarray):
+    """处理单帧数据 (参考 process_data.py visualize_pcd)"""
+    frame_out = os.path.join(output_dir, ts)
+    os.makedirs(frame_out, exist_ok=True)
+    
+    for cam_name, params in camera_params.items():
+        if cam_name not in cam_mapping:
+            continue
+        
+        img_filename = cam_mapping[cam_name]
+        img_path = os.path.join(data_dir, "sensor_data/camera", cam_name, img_filename)
+        
+        if not os.path.exists(img_path):
+            continue
+        
+        img = cv2.imread(img_path)
+        if img is None:
+            continue
+        
+        # 判断是否是鱼眼相机 (与速腾 "a_" in cam 逻辑对应)
+        is_fisheye = params["is_fisheye"] or "fisheye" in cam_name
+        
+        # 内参矩阵 4x4
+        intr_4x4 = np.identity(4)
+        intr_4x4[:3, :3] = params["intr"]
+        extr = params["extr"]  # body_to_camera
+        D = params["D"]
+        
+        # 投影 (与速腾逻辑一致: undistort_flag=False)
+        if is_fisheye:
+            coords, zzz = point_project_distort(
+                copy.deepcopy(points), img, intr_4x4, extr, D
+            )
+        else:
+            coords, zzz = point_project(
+                copy.deepcopy(points), img, intr_4x4, extr
+            )
+        
+        # 深度归一化 (与速腾逻辑完全一致)
+        # 速腾对所有相机都用 SHOW_DEPTH=150 过滤，但颜色映射范围不同
+        if is_fisheye:
+            show_depth = 50
+        else:
+            show_depth = 150
+        
+        if coords is not None and len(coords) > 0:
+            zzz = zzz / show_depth * 255
+            circle_thickness = 1
+            for index in range(coords.shape[0]):
+                p = (int(coords[index, 0]), int(coords[index, 1]))
+                cv2.drawMarker(
+                    img, position=p, color=get_color(int(zzz[index])),
+                    markerSize=circle_thickness * 2,
+                    markerType=cv2.MARKER_CROSS,
+                    thickness=circle_thickness
+                )
+        
+        # 保存
+        out_file = os.path.join(frame_out, f"{cam_name}.jpeg")
+        cv2.imwrite(out_file, img)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="点云投影验证 - 转换后格式")
-    parser.add_argument(
-        "--data-dir",
-        type=str,
-        default="/home/geely/Documents/sunyafei/0203select_output/605/2025-11-21-16-15-45",
-    )
-    parser.add_argument("--output-dir", type=str, default="visualize")
-    parser.add_argument("--subsample", type=int, default=100000)
-    parser.add_argument("--max-frames", type=int, default=-1)
+    parser = argparse.ArgumentParser(description="点云投影可视化")
+    parser.add_argument("--data-dir", required=True, help="数据目录")
+    parser.add_argument("--output-dir", default="visualize", help="输出子目录名")
+    parser.add_argument("--max-frames", type=int, default=None, help="最大处理帧数")
     args = parser.parse_args()
 
     data_dir = args.data_dir
     output_root = os.path.join(data_dir, args.output_dir)
     os.makedirs(output_root, exist_ok=True)
 
-    # 映射文件
-    result_path = os.path.join(data_dir, "node_output/peral-dataproc/result.json")
-    print(f"Loading mapping: {result_path}")
-    with open(result_path) as f:
-        result = json.load(f)
+    # 加载映射文件
+    mapping_path = None
+    for p in [
+        os.path.join(data_dir, "node_output/peral-dataproc/result.json"),
+        os.path.join(data_dir, "node_output/result.json"),
+    ]:
+        if os.path.exists(p):
+            mapping_path = p
+            break
 
-    CAMERA_MAPPING = {"camera_front_right": "camera_front_wide"}
+    if not mapping_path:
+        print("    Error: mapping file not found")
+        return
 
-    pcd_names = sorted(result.keys())
-    if args.max_frames > 0:
-        pcd_names = pcd_names[: args.max_frames]
+    with open(mapping_path, "r") as f:
+        mapping = json.load(f)
 
-    camera_calibs = {}
-    camera_extrs_inv = {}
+    # 加载相机参数 - 根据相机类型从不同来源加载
+    camera_params = {}
+    
+    # 从 YAML 获取相机基本信息 (用于判断类型和分辨率)
+    calib_yaml_dir = os.path.join(data_dir, "calibration/camera")
+    
+    # 鱼眼相机: 从 calib_anno 加载 (未去畸变)
+    fisheye_dir = os.path.join(data_dir, "calib_anno")
+    
+    # 普通相机: 从 calib_anno_vc 加载 (已去畸变)
+    normal_dir = os.path.join(data_dir, "calib_anno_vc")
+    
+    fisheye_cams = []
+    normal_cams = []
+    
+    if os.path.exists(calib_yaml_dir):
+        for f_name in sorted(os.listdir(calib_yaml_dir)):
+            if f_name.endswith(".yaml") and f_name.startswith("camera_"):
+                cam_name = f_name.replace(".yaml", "")
+                yaml_path = os.path.join(calib_yaml_dir, f_name)
+                with open(yaml_path, 'r') as y_file:
+                    lines = y_file.readlines()
+                    content = "".join([line for line in lines if not line.startswith('%')])
+                    calib_yaml = yaml.safe_load(content)
+                
+                # 判断相机类型
+                is_fisheye = calib_yaml.get("is_fisheye", False) or "fisheye" in cam_name
+                
+                if is_fisheye:
+                    # 鱼眼相机: 从 calib_anno/*.json 加载
+                    json_path = os.path.join(fisheye_dir, f"{cam_name}.json")
+                    if os.path.exists(json_path):
+                        with open(json_path, 'r') as j_file:
+                            calib_json = json.load(j_file)
+                        params = load_json_params(calib_json)
+                        params["width"] = int(calib_yaml.get("width", 1920))
+                        params["height"] = int(calib_yaml.get("height", 1280))
+                        camera_params[cam_name] = params
+                        fisheye_cams.append(cam_name)
+                else:
+                    # 普通相机: 从 calib_anno_vc/*.json 加载
+                    json_path = os.path.join(normal_dir, f"{cam_name}.json")
+                    if os.path.exists(json_path):
+                        with open(json_path, 'r') as j_file:
+                            calib_json = json.load(j_file)
+                        params = load_json_params(calib_json)
+                        params["width"] = int(calib_yaml.get("width", 1920))
+                        params["height"] = int(calib_yaml.get("height", 1280))
+                        camera_params[cam_name] = params
+                        normal_cams.append(cam_name)
+    
+    print(f"    Cameras: {len(normal_cams)} normal + {len(fisheye_cams)} fisheye")
+    
+    # 处理帧
+    frames = sorted(mapping.keys())
+    if args.max_frames:
+        frames = frames[:args.max_frames]
 
-    print(f"Processing {len(pcd_names)} frames...")
-
-    for pcd_name in pcd_names:
-        # 使用 cam_front_right 的时间戳作为文件夹名
-        cam_front_right_image = result[pcd_name].get("camera_front_right")
-        if cam_front_right_image:
-            timestamp = cam_front_right_image.replace(".jpeg", "")
-        else:
-            # 如果没有 cam_front_right，使用 PCD 时间戳
-            timestamp = pcd_name.replace(".pcd", "")
-
-        pcd_path = os.path.join(data_dir, "sensor_data/lidar/lidar_concat", pcd_name)
+    for i, ts_key in enumerate(frames):
+        pcd_ts = ts_key.replace(".pcd", "")
+        # 使用 camera_front_wide 的时间戳作为文件夹名
+        cam_mapping = mapping[ts_key]
+        wide_img = cam_mapping.get("camera_front_wide", "")
+        frame_ts = wide_img.replace(".jpeg", "") if wide_img else pcd_ts
+        
+        print(f"    [{i+1}/{len(frames)}] Frame: {frame_ts}")
+        
+        pcd_path = os.path.join(data_dir, "sensor_data/lidar/lidar_concat", f"{pcd_ts}.pcd")
         if not os.path.exists(pcd_path):
             continue
 
-        frame_output_dir = os.path.join(output_root, timestamp)
-        os.makedirs(frame_output_dir, exist_ok=True)
-
         points = load_pcd(pcd_path)
-        points = points[~np.any(np.isnan(points), axis=1)]
-        if len(points) > args.subsample:
-            points = points[
-                np.random.choice(len(points), args.subsample, replace=False)
-            ]
 
-        for camera_name in result[pcd_name].keys():
-            actual_camera_name = CAMERA_MAPPING.get(camera_name, camera_name)
-            image_name = result[pcd_name][camera_name]
-            if not image_name:
-                continue
+        # 过滤无效点 (参考 process_data.py)
+        flag = (np.abs(points[:, 0]) <= 500) & \
+               (np.abs(points[:, 1]) <= 500) & \
+               (np.abs(points[:, 2]) <= 50)
+        points = points[flag]
 
-            image_path = os.path.join(
-                data_dir, "sensor_data/camera", actual_camera_name, image_name
-            )
-            if not os.path.exists(image_path):
-                continue
+        # 坐标系转换: 点云是 Body RFU (Y前X右Z上), 标定外参是 Body FLU (X前Y左Z上)
+        # R_rfu2flu = [[0,1,0],[-1,0,0],[0,0,1]]
+        R_rfu2flu = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], dtype=np.float32)
+        points = (R_rfu2flu @ points.T).T
 
-            img = cv2.imread(image_path)
-            if img is None:
-                continue
+        process_frame(data_dir, output_root, frame_ts, cam_mapping, camera_params, points)
 
-            if actual_camera_name not in camera_calibs:
-                calib_path = os.path.join(
-                    data_dir, "calibration/camera", f"{actual_camera_name}.yaml"
-                )
-                if not os.path.exists(calib_path):
-                    continue
-
-                calib = load_camera_calib_yaml(calib_path)
-                camera_calibs[actual_camera_name] = calib
-                T_cam2b = build_extrinsics_matrix(calib["r_s2b"], calib["t_s2b"])
-                camera_extrs_inv[actual_camera_name] = np.linalg.inv(T_cam2b)
-
-            calib = camera_calibs[actual_camera_name]
-            T_body2cam = camera_extrs_inv[actual_camera_name]
-
-            # 7V 相机：投影前进行实时去畸变处理
-            if not calib["is_fisheye"]:
-                params = get_undistort_params(calib)
-                img = cv2.remap(img, params["map1"], params["map2"], interpolation=cv2.INTER_LINEAR)
-                
-                # 使用去畸变后的新内参进行投影，且畸变系数设为 0
-                proj_calib = calib.copy()
-                new_intr = params["new_intrinsic"]
-                proj_calib["fx"], proj_calib["fy"] = float(new_intr[0, 0]), float(new_intr[1, 1])
-                proj_calib["cx"], proj_calib["cy"] = float(new_intr[0, 2]), float(new_intr[1, 2])
-                proj_calib["kc2"], proj_calib["kc3"] = 0.0, 0.0
-                proj_calib["kc4"], proj_calib["kc5"] = 0.0, 0.0
-            else:
-                # 鱼眼相机：保持原始投影逻辑
-                proj_calib = calib
-
-            max_depth = 50 if calib["is_fisheye"] else 150
-            u, v, depths = project_points_to_camera(
-                points, T_body2cam, proj_calib, max_depth=max_depth
-            )
-
-            if len(u) > 0:
-                for i in range(len(u)):
-                    depth_val = (depths[i] / max_depth) * 255
-                    color = get_color_pseudo(depth_val)
-                    cv2.drawMarker(img, (int(u[i]), int(v[i])), color, cv2.MARKER_CROSS, 3, 1)
-
-            cv2.imwrite(os.path.join(frame_output_dir, f"{camera_name}.jpeg"), img)
-
-        print(f"  Frame {timestamp} done.")
-
-    print(f"\nDone. Outputs in: {output_root}")
+    print(f"    Output: {output_root}")
 
 
 if __name__ == "__main__":
