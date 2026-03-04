@@ -26,11 +26,11 @@ PCD (Body RFU) → [extr_body_RFU_to_cam] → 相机坐标系 → 像素
 
 | 数据 | 坐标系 |
 |------|--------|
-| `sensor_data/lidar/lidar_concat/*.pcd` | **Body RFU**（X右，Y前，Z上）⚠️ |
+| `sensor_data/lidar/lidar_undist/*.pcd` | **Body RFU**（X右，Y前，Z上）⚠️ |
 | `calib_anno/*.json` 中的 `extrinsic` | **camera → Body FLU**（经过 RFU→FLU 旋转转换） |
 | `calib_anno_vc/*.json` 中的 `extrinsic` | **camera → Body FLU**（同上） |
 
-> ⚠️ **关键说明**：`lidar_concat` 里的 PCD 直接拷贝自速腾的
+> ⚠️ **关键说明**：`lidar_undist` 里的 PCD 直接拷贝自速腾的
 > `result/test_calibration/middle/*.pcd`，该文件是 Body **RFU** 坐标系，
 > 而非 Body FLU。`extractors.py` 中的注释"已是 Body FLU"是错误的。
 
@@ -54,7 +54,7 @@ inv(extrinsic_cam_to_FLU) @ R_rfu2flu == calib.json["extr"]  (body_RFU_to_cam)
 ## 数据来源
 
 - **基准路径 (Base Directory)**: 转换输出目录，例如 `/path/to/0203select_output/605/2025-11-21-16-15-45/`
-- **点云文件 (PCD)**: `sensor_data/lidar/lidar_concat/*.pcd`（Body RFU 坐标系）
+- **点云文件 (PCD)**: `sensor_data/lidar/lidar_undist/*.pcd`（Body RFU 坐标系）
 - **图像文件 (Images)**: `sensor_data/camera/camera_*/`
 - **标定文件来源和用途**:
   - **calib_anno（鱼眼相机用）**: `calib_anno/*.json` — extrinsic 为 camera→Body FLU，保留原始畸变系数
@@ -174,7 +174,7 @@ visualize/
 
 ## 注意事项
 
-1. **点云坐标系**：`lidar_concat` PCD 是 Body RFU，投影前必须乘以 `R_rfu2flu`，否则点云会投影到错误位置（与实际物体有明显偏移）。
+1. **点云坐标系**：`lidar_undist` PCD 是 Body RFU，投影前必须乘以 `R_rfu2flu`，否则点云会投影到错误位置（与实际物体有明显偏移）。
 
 2. **外参方向**：`calib_anno` 存的是 camera→body（正向），投影时需取逆得到 body→camera。速腾 `calib.json` 存的是 body→camera（反向），可直接使用。
 

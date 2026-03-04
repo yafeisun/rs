@@ -40,16 +40,16 @@
 │   ├── egopose_opt.json                      # 离线定位信息汇总文件
 │   └── egopose_optpose/                      # 各帧定位信息
 │       └── <timestamp>.json                  # 单帧定位数据（JSON格式）
-├── calib_anno/                               # 标定参数目录
+├── calib_anno/                               # 所有原始相机的内参 外参 畸变系数矩阵，来自于calibration
 │   └── camera/                               # 相机标定参数
 │       └── camera_<name>.yaml                # 相机标定文件（外参+内参）
-├── calib_anno_vc/                            # 虚拟相机标定参数
+├── calib_anno_vc/                            # 所有虚拟相机的内参 外参 畸变系数矩阵，来自于calibration
 │   └── camera_<name>.json                    # 虚拟相机标定文件
 ├── calibration/                              # 在线标定数据
 │   ├── camera/                               # 相机在线标定
 │   ├── lidar/                                # 激光雷达在线标定
 │   ├── localization/                         # 定位相关标定
-│   └── virtual_camera/                       # 虚拟相机标定
+│   └── virtual_camera/                       # 少量点云投影到各传感器下的JPG图像
 ├── visualize/                                # 可视化结果目录
 │   └── <timestamp>/                          # 按时间戳分组的可视化结果
 │       └── *.png                             # 可视化图像文件

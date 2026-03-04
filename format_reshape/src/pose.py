@@ -1,11 +1,16 @@
 """
-位姿处理函数
+位姿处理函数 - 最终精度修复版
 """
 
 import json
-from typing import Dict, List, Optional, Any, Tuple
+import math
+import os
+import numpy as np
+import cv2
 import math
 import numpy as np
+import cv2
+from typing import Dict, List, Optional, Any, Tuple
 
 
 def euler_from_quaternion(q: List[float]) -> List[float]:
@@ -22,58 +27,29 @@ def euler_from_quaternion(q: List[float]) -> List[float]:
     return [roll, pitch, yaw]
 
 
-def euler_to_rotation_vector(roll: float, pitch: float, yaw: float) -> List[float]:
-    """将欧拉角转换为旋转向量 (Rodrigues公式)"""
+def euler_to_rotation_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    """根据 Robosense 约定的 R = Rz * Ry * Rx 构建旋转矩阵。输入是弧度。"""
     cos_r, sin_r = math.cos(roll), math.sin(roll)
     cos_p, sin_p = math.cos(pitch), math.sin(pitch)
     cos_y, sin_y = math.cos(yaw), math.sin(yaw)
 
-    R = np.array(
-        [
-            [
-                cos_y * cos_p,
-                cos_y * sin_p * sin_r - sin_y * cos_r,
-                cos_y * sin_p * cos_r + sin_y * sin_r,
-            ],
-            [
-                sin_y * cos_p,
-                sin_y * sin_p * sin_r + cos_y * cos_r,
-                sin_y * sin_p * cos_r - cos_y * sin_r,
-            ],
-            [-sin_p, cos_p * sin_r, cos_p * cos_r],
-        ]
-    )
+    Rx = np.array([[1, 0, 0], [0, cos_r, -sin_r], [0, sin_r, cos_r]])
+    Ry = np.array([[cos_p, 0, sin_p], [0, 1, 0], [-sin_p, 0, cos_p]])
+    Rz = np.array([[cos_y, -sin_y, 0], [sin_y, cos_y, 0], [0, 0, 1]])
 
-    # 计算旋转角度
-    trace = np.trace(R)
-    # 钳位 trace 到 [-3, 3] 避免数值问题
-    trace = max(-3.0, min(3.0, trace))
-    angle = math.acos((trace - 1) / 2)
+    return Rz @ Ry @ Rx
 
-    if angle < 1e-6:
-        return [0.0, 0.0, 0.0]
 
-    rx = (R[2, 1] - R[1, 2]) / (2 * math.sin(angle))
-    ry = (R[0, 2] - R[2, 0]) / (2 * math.sin(angle))
-    rz = (R[1, 0] - R[0, 1]) / (2 * math.sin(angle))
-    return [rx * angle, ry * angle, rz * angle]
+def euler_to_rotation_vector(roll: float, pitch: float, yaw: float) -> List[float]:
+    """将欧拉角转换为旋转向量 (Rodrigues)"""
+    R = euler_to_rotation_matrix(roll, pitch, yaw)
+    rvec, _ = cv2.Rodrigues(R)
+    return rvec.flatten().tolist()
 
 
 def rotation_vector_to_matrix(r_s2b: List[float]) -> np.ndarray:
-    """将旋转向量转换为旋转矩阵 (Rodrigues公式)"""
-    rx, ry, rz = r_s2b
-    angle = math.sqrt(rx * rx + ry * ry + rz * rz)
-
-    if angle < 1e-10:
-        return np.eye(3)
-
-    # 单位旋转轴
-    kx, ky, kz = rx / angle, ry / angle, rz / angle
-
-    # Rodrigues 公式: R = I + sin(θ) * K + (1 - cos(θ)) * K²
-    K = np.array([[0, -kz, ky], [kz, 0, -kx], [-ky, kx, 0]])
-
-    R = np.eye(3) + math.sin(angle) * K + (1 - math.cos(angle)) * (K @ K)
+    """将旋转向量转换为旋转矩阵 (Rodrigues)"""
+    R, _ = cv2.Rodrigues(np.array(r_s2b))
     return R
 
 
@@ -88,81 +64,59 @@ def quat_to_rotation_matrix(qw: float, qx: float, qy: float, qz: float) -> np.nd
     )
     return R
 
+
 def build_extrinsics_matrix(r_s2b: np.ndarray, t_s2b: np.ndarray) -> np.ndarray:
     """构建 4x4 外参矩阵 (sensor -> body)"""
-    import cv2
     R, _ = cv2.Rodrigues(r_s2b)
     t = np.array(t_s2b).flatten()
-
     T = np.eye(4)
     T[:3, :3] = R
     T[:3, 3] = t
-
     return T
+
 
 def rotation_matrix_to_quat(R: np.ndarray) -> List[float]:
     """3x3旋转矩阵转四元数 [qw, qx, qy, qz]"""
-    trace = R[0, 0] + R[1, 1] + R[2, 2]
-    if trace > 0:
-        s = 0.5 / math.sqrt(trace + 1.0)
-        w = 0.25 / s
-        x = (R[2, 1] - R[1, 2]) * s
-        y = (R[0, 2] - R[2, 0]) * s
-        z = (R[1, 0] - R[0, 1]) * s
-    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
-        s = 2.0 * math.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
-        w = (R[2, 1] - R[1, 2]) / s
-        x = 0.25 * s
-        y = (R[0, 1] + R[1, 0]) / s
-        z = (R[0, 2] + R[2, 0]) / s
+    tr = np.trace(R)
+    if tr > 0:
+        S = math.sqrt(tr + 1.0) * 2
+        qw = 0.25 * S
+        qx = (R[2, 1] - R[1, 2]) / S
+        qy = (R[0, 2] - R[2, 0]) / S
+        qz = (R[1, 0] - R[0, 1]) / S
+    elif (R[0, 0] > R[1, 1]) and (R[0, 0] > R[2, 2]):
+        S = math.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2
+        qw = (R[2, 1] - R[1, 2]) / S
+        qx = 0.25 * S
+        qy = (R[0, 1] + R[1, 0]) / S
+        qz = (R[0, 2] + R[2, 0]) / S
     elif R[1, 1] > R[2, 2]:
-        s = 2.0 * math.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
-        w = (R[0, 2] - R[2, 0]) / s
-        x = (R[0, 1] + R[1, 0]) / s
-        y = 0.25 * s
-        z = (R[1, 2] + R[2, 1]) / s
+        S = math.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2
+        qw = (R[0, 2] - R[2, 0]) / S
+        qx = (R[0, 1] + R[1, 0]) / S
+        qy = 0.25 * S
+        qz = (R[1, 2] + R[2, 1]) / S
     else:
-        s = 2.0 * math.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
-        w = (R[1, 0] - R[0, 1]) / s
-        x = (R[0, 2] + R[2, 0]) / s
-        y = (R[1, 2] + R[2, 1]) / s
-        z = 0.25 * s
-    return [w, x, y, z]
+        S = math.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2
+        qw = (R[1, 0] - R[0, 1]) / S
+        qx = (R[0, 2] + R[2, 0]) / S
+        qy = (R[1, 2] + R[2, 1]) / S
+        qz = 0.25 * S
+    return [qw, qx, qy, qz]
 
 
 def transform_poses_to_first_frame(
     pose_dict: Dict[str, List[float]],
 ) -> Dict[str, List[float]]:
-    """
-    将世界坐标系下的 pose 序列转换到第一帧车体坐标系，并统一到 FLU 坐标系。
-
-    输入 pose_dict: {timestamp_ns_str: [x, y, z, qx, qy, qz, qw], ...}
-    原始数据坐标系 (RFU): X=右, Y=前, Z=上
-    目标坐标系 (FLU): X=前, Y=左, Z=上
-
-    变换步骤:
-    1. 计算相对第一帧的位姿 T_rel = T0^-1 * Ti
-    2. 将相对位姿从 RFU 转换到 FLU: T_final = R_align^-1 * T_rel * R_align
-       其中 R_align 是将 FLU 向量转回 RFU 的矩阵 (即 New X 是 Old Y, New Y 是 -Old X)
-    """
+    """标准相对位姿转换 (不包含轴旋转)"""
     sorted_keys = sorted(pose_dict.keys(), key=lambda k: int(k))
     if not sorted_keys:
         return pose_dict
 
-    # R_align (FLU -> RFU)
-    # New X (1,0,0) -> Old Y (0,1,0)
-    # New Y (0,1,0) -> -Old X (-1,0,0)
-    # New Z (0,0,1) -> Old Z (0,0,1)
-    R_align = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]])
-    R_align_inv = R_align.T
-
-    # 第一帧位姿 (原始坐标系 RFU)
     x0, y0, z0, qx0, qy0, qz0, qw0 = pose_dict[sorted_keys[0]]
     R0 = quat_to_rotation_matrix(qw0, qx0, qy0, qz0)
-    t0 = np.array([x0, y0, z0])
-
-    # T0^{-1}
     R0_inv = R0.T
+    t0 = np.array([x0, y0, z0])
     t0_inv = -R0_inv @ t0
 
     result = {}
@@ -170,150 +124,126 @@ def transform_poses_to_first_frame(
         xi, yi, zi, qxi, qyi, qzi, qwi = pose_dict[key]
         Ri = quat_to_rotation_matrix(qwi, qxi, qyi, qzi)
         ti = np.array([xi, yi, zi])
-
-        # 1. 计算相对位姿 (仍在 RFU 系)
-        # T_rel = T0^-1 * Ti
-        R_rel = R0_inv @ Ri
-        t_rel = R0_inv @ ti + t0_inv
-
-        # 2. 转换到 FLU 系
-        # P_flu = R_align_inv * P_rfu
-        # T_flu = R_align_inv * T_rfu * R_align
-        R_final = R_align_inv @ R_rel @ R_align
-        t_final = R_align_inv @ t_rel
-
-        qw_f, qx_f, qy_f, qz_f = rotation_matrix_to_quat(R_final)
-
+        R_f = R0_inv @ Ri
+        t_f = R0_inv @ ti + t0_inv
+        qw_f, qx_f, qy_f, qz_f = rotation_matrix_to_quat(R_f)
         result[key] = [
-            float(t_final[0]),
-            float(t_final[1]),
-            float(t_final[2]),
+            float(t_f[0]),
+            float(t_f[1]),
+            float(t_f[2]),
             qx_f,
             qy_f,
             qz_f,
             qw_f,
         ]
-
     return result
 
 
-def read_pcd_binary(pcd_path: str) -> Tuple[np.ndarray, dict]:
-    header = {}
-    data_offset = 0
+def transform_point_cloud(points: np.ndarray, T: np.ndarray) -> np.ndarray:
+    """使用 4x4 变换矩阵 T 变换点云"""
+    if len(points) == 0:
+        return points
+    if hasattr(points, "dtype") and points.dtype.names:
+        xyz = np.stack([points["x"], points["y"], points["z"]], axis=1)
+        ones = np.ones((len(xyz), 1))
+        xyz_h = np.hstack([xyz, ones])
+        transformed = (T @ xyz_h.T).T
+        res = points.copy()
+        res["x"], res["y"], res["z"] = (
+            transformed[:, 0],
+            transformed[:, 1],
+            transformed[:, 2],
+        )
+        return res
+    else:
+        xyz = points[:, :3].astype(np.float64)  # Ensure float64 for accurate transformation
+        ones = np.ones((len(xyz), 1))
+        xyz_h = np.hstack([xyz, ones])
+        transformed = (T @ xyz_h.T).T
+        res = points.copy().astype(np.float64)
+        res[:, :3] = transformed[:, :3]
+        return res
+        xyz = points[:, :3]
+        ones = np.ones((len(xyz), 1))
+        xyz_h = np.hstack([xyz, ones])
+        transformed = (T @ xyz_h.T).T
+        res = points.copy()
+        res[:, :3] = transformed[:, :3]
+        return res
 
+
+def read_pcd_binary(pcd_path: str) -> Tuple[np.ndarray, dict]:
+    """
+    Read binary PCD file (supports DATA binary format).
+    Returns points as numpy array with structured dtype and header dict.
+    """
+    header = {}
     with open(pcd_path, "rb") as f:
         while True:
             line = f.readline().decode("ascii").strip()
-            if line.startswith("#"):
-                continue
-            elif line.startswith("DATA"):
-                data_offset = f.tell()
+            if line.startswith("DATA"):
+                # Mark the position after DATA line
+                data_start = f.tell()
                 break
-
             parts = line.split()
             if len(parts) >= 2:
-                header[parts[0]] = " ".join(parts[1:]) if len(parts) > 2 else parts[1]
+                header[parts[0]] = " ".join(parts[1:])
 
-        width = int(header.get("WIDTH", 1))
-        height = int(header.get("HEIGHT", 1))
-        num_points = width * height
-
-        data_bytes = f.read()
-
-        fields_str = header.get("FIELDS", "x y z intensity")
-        fields = fields_str.split()
-        num_fields = len(fields)
-        point_size = num_fields * 4
-
-        dtype_list = [(field, np.float32) for field in fields]
-        points = np.frombuffer(data_bytes, dtype=dtype_list, count=num_points)
-
-        return points, header
-
-
-def transform_point_cloud(points: np.ndarray, T: np.ndarray) -> np.ndarray:
-    """
-    使用 4x4 变换矩阵 T 变换点云
-    """
-    if len(points) == 0:
-        return points
-
-    if hasattr(points, "dtype") and points.dtype.names:
-        # 处理结构化数组
-        xyz = np.stack([points["x"], points["y"], points["z"]], axis=1)
-        ones = np.ones((len(xyz), 1))
-        xyz_hom = np.hstack([xyz, ones])
-        xyz_transformed = (T @ xyz_hom.T).T
+        # Parse SIZE, TYPE, COUNT fields to determine dtype
+        fields = header.get("FIELDS", "x y z intensity").split()
+        sizes = list(map(int, header.get("SIZE", "4 4 4 4").split()))
+        types = header.get("TYPE", "F F F F").split()
+        counts = list(map(int, header.get("COUNT", "1 1 1 1").split()))
         
-        new_points = points.copy()
-        new_points["x"] = xyz_transformed[:, 0]
-        new_points["y"] = xyz_transformed[:, 1]
-        new_points["z"] = xyz_transformed[:, 2]
-        return new_points
-    else:
-        # 处理普通数组
-        xyz = points[:, :3]
-        ones = np.ones((len(xyz), 1))
-        xyz_hom = np.hstack([xyz, ones])
-        xyz_transformed = (T @ xyz_hom.T).T
+        # Build numpy dtype from header specifications
+        type_map = {'I': np.int32, 'F': np.float32, 'U': np.uint8, 'L': np.uint64}
+        dtype_parts = []
+        for field, size, type_code, count in zip(fields, sizes, types, counts):
+            np_type = type_map.get(type_code, np.float32)
+            dtype_parts.append((field, np_type))
+        dtype = np.dtype(dtype_parts)
         
-        new_points = points.copy()
-        new_points[:, :3] = xyz_transformed[:, :3]
-        return new_points
+        # Read binary data and convert to structured array
+        num_points = int(header.get("POINTS", "0"))
+        
+        # Seek to start of data section and read
+        f.seek(data_start)
+        data = np.fromfile(f, dtype=dtype, count=num_points)
+        
+        return data, header
 
-
-def transform_point_cloud_rotation(points_transform: np.ndarray) -> np.ndarray:
-    """
-    [Legacy] 将点云从原始坐标系转换到目标 FLU 坐标系 (X=前, Y=左, Z=上)
-    保留此函数用于兼容性，但建议使用 transform_point_cloud
-    """
-    # 按照 Y-forward (RFU) -> X-forward (FLU) 的硬编码逻辑
-    # X_new = Y_old, Y_new = -X_old
-    if hasattr(points_transform, "dtype") and points_transform.dtype.names:
-        new_points = points_transform.copy()
-        new_points["x"] = points_transform["y"]
-        new_points["y"] = -points_transform["x"]
-    else:
-        new_points = points_transform.copy()
-        new_points[:, 0] = points_transform[:, 1]
-        new_points[:, 1] = -points_transform[:, 0]
-    return new_points
-
-
-def write_pcd_binary(pcd_path: str, points_transform: np.ndarray, header: dict):
-    import os
-
+def write_pcd_binary(pcd_path: str, points: np.ndarray, header: dict):
     os.makedirs(os.path.dirname(pcd_path), exist_ok=True)
-
     with open(pcd_path, "wb") as f:
-        f.write(b"# .PCD v0.7 - Point Cloud Data file format\n")
-        f.write(b"VERSION 0.7\n")
-
-        # Handle both structured and regular arrays
-        if hasattr(points_transform, "dtype") and points_transform.dtype.names:
-            fields = list(points_transform.dtype.names)
-        else:
-            fields = ["x", "y", "z", "intensity"]
-
+        f.write(b"# .PCD v0.7\nVERSION 0.7\n")
+        fields = list(points.dtype.names)
         f.write(f"FIELDS {' '.join(fields)}\n".encode())
+        f.write(f"SIZE {' '.join(['4'] * len(fields))}\n".encode())
+        f.write(f"TYPE {' '.join(['F'] * len(fields))}\n".encode())
+        f.write(f"COUNT {' '.join(['1'] * len(fields))}\n".encode())
+        f.write(f"WIDTH {len(points)}\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\n".encode())
+        f.write(f"POINTS {len(points)}\nDATA binary\n".encode())
+        points.tofile(f)
 
-        sizes = [str(4) for _ in fields]
-        f.write(f"SIZE {' '.join(sizes)}\n".encode())
 
-        types = ["F" for _ in fields]
-        f.write(f"TYPE {' '.join(types)}\n".encode())
-
-        counts = ["1" for _ in fields]
-        f.write(f"COUNT {' '.join(counts)}\n".encode())
-
-        f.write(f"WIDTH {len(points_transform)}\n".encode())
-        f.write(b"HEIGHT 1\n")
-        f.write(b"VIEWPOINT 0 0 0 1 0 0 0\n")
-        f.write(f"POINTS {len(points_transform)}\n".encode())
-
-        f.write(b"DATA binary\n")
-
-        points_transform.tofile(f)
+def create_pose_message(ts_ns_str: str, data: List[float]) -> Dict[str, Any]:
+    ts = int(ts_ns_str)
+    x, y, z, qx, qy, qz, qw = data
+    r, p, yaw = euler_from_quaternion([qw, qx, qy, qz])
+    return {
+        "header": {
+            "seq": 0,
+            "stamp": {"secs": ts // 10**9, "nsecs": ts % 10**9},
+            "frame_id": "GCJ02",
+        },
+        "meta": {"timestamp_us": ts // 1000, "seq": 0, "type": 0},
+        "position": {"available": 3, "position_local": {"x": x, "y": y, "z": z}},
+        "orientation": {
+            "available": 15,
+            "euler_local": {"roll": r, "pitch": p, "yaw": yaw},
+            "quaternion_local": {"w": qw, "x": qx, "y": qy, "z": qz},
+        },
+    }
 
 
 def load_bev_pose(bev_pose_path: str) -> Optional[Dict[str, List[float]]]:
@@ -321,14 +251,8 @@ def load_bev_pose(bev_pose_path: str) -> Optional[Dict[str, List[float]]]:
     try:
         with open(bev_pose_path, "r") as f:
             data = json.load(f)
-
-        # 如果数据是字典格式，提取pose字段
         if isinstance(data, dict):
             pose_data = data.get("pose", data)
-            # 如果pose数据是嵌套字典，根据实际情况提取
-            if isinstance(pose_data, dict):
-                # 假设pose数据格式为 {timestamp_ns: [x,y,z,qx,qy,qz,qw], ...}
-                return pose_data
             return pose_data
         return data
     except Exception as e:
@@ -347,99 +271,17 @@ def load_mapping_pose(pose_path: str) -> Optional[Dict[str, List[float]]]:
                 if len(parts) >= 9:
                     try:
                         x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
-                        ox, oy, oz, ow = (
-                            float(parts[4]),
-                            float(parts[5]),
-                            float(parts[6]),
-                            float(parts[7]),
-                        )
-
-                        # 改进的时间戳转换：避免浮点精度问题
-                        # 假设格式为 "1764310903.399620" (秒.微秒)
+                        ox, oy, oz, ow = float(parts[4]), float(parts[5]), float(parts[6]), float(parts[7])
                         time_str = parts[8]
                         if "." in time_str:
                             sec_part, usec_part = time_str.split(".")
-                            usec_part = usec_part.ljust(6, "0")[:6]  # 确保微秒部分是6位
-                            timestamp_ns = (
-                                int(sec_part) * 1_000_000_000 + int(usec_part) * 1000
-                            )
+                            usec_part = usec_part.ljust(6, "0")[:6]
+                            ts_ns = int(sec_part) * 1_000_000_000 + int(usec_part) * 1000
                         else:
-                            timestamp_ns = int(float(time_str) * 1_000_000_000)
-
-                        pose_dict[str(timestamp_ns)] = [x, y, z, ox, oy, oz, ow]
-                    except (ValueError, IndexError) as e:
-                        print(f"    警告: 跳过无效行: {line.strip()}")
-                        continue
+                            ts_ns = int(float(time_str) * 1_000_000_000)
+                        pose_dict[str(ts_ns)] = [x, y, z, ox, oy, oz, ow]
+                    except: continue
     except Exception as e:
         print(f"    错误: 读取mapping pose文件失败: {e}")
         return None
-
     return pose_dict
-
-
-def create_pose_message(
-    timestamp_ns_str: str, pose_data: List[float]
-) -> Dict[str, Any]:
-    """创建完整的pose消息结构"""
-    timestamp_ns = int(timestamp_ns_str)
-    secs, nsecs = timestamp_ns // 1_000_000_000, timestamp_ns % 1_000_000_000
-    x, y, z, qx, qy, qz, qw = pose_data
-    roll, pitch, yaw = euler_from_quaternion([qw, qx, qy, qz])
-
-    return {
-        "header": {
-            "seq": 0,
-            "stamp": {"secs": secs, "nsecs": nsecs},
-            "frame_id": '{"coordinate_system":"GCJ02","version":"LTS_6188e01"}',
-        },
-        "meta": {"timestamp_us": timestamp_ns // 1000, "seq": 0, "type": 0},
-        "position": {
-            "available": 2,
-            "position_global": {"latitude": 0.0, "longitude": 0.0, "altitude": 0.0},
-            "position_local": {"x": x, "y": y, "z": z},
-        },
-        "velocity": {
-            "available": 2,
-            "velocity_global": {"ve": 0.0, "vn": 0.0, "vu": 0.0},
-            "velocity_local": {"vx": 0.0, "vy": 0.0, "vz": 0.0},
-        },
-        "angular_velocity": {
-            "available": 1,
-            "angvelocity_local": {"vx": 0.0, "vy": 0.0, "vz": 0.0},
-        },
-        "orientation": {
-            "available": 12,
-            "euler_global": {"roll": 0.0, "pitch": 0.0, "yaw": 0.0},
-            "quaternion_global": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0},
-            "euler_local": {"roll": roll, "pitch": pitch, "yaw": yaw},
-            "quaternion_local": {"w": qw, "x": qx, "y": qy, "z": qz},
-        },
-        "acceleration": {
-            "available": 2,
-            "acceleration_global": {"ae": 0.0, "an": 0.0, "au": 0.0},
-            "acceleration_local": {"ax": 0.0, "ay": 0.0, "az": 0.0},
-        },
-        "position_std": {
-            "available": 2,
-            "pos_std_global": {"std_pe": 0.0, "std_pn": 0.0, "std_pu": 0.0},
-            "pos_std_local": {"std_px": 0.0, "std_py": 0.0, "std_pz": 0.0},
-        },
-        "velocity_std": {
-            "available": 2,
-            "vel_std_global": {"std_ve": 0.0, "std_vn": 0.0, "std_vu": 0.0},
-            "vel_std_local": {"std_vx": 0.0, "std_vy": 0.0, "std_vz": 0.0},
-        },
-        "angular_velocity_std": {
-            "available": 0,
-            "angvel_std_local": {"std_vx": 0.0, "std_vy": 0.0, "std_vz": 0.0},
-        },
-        "orientation_std": {
-            "available": 12,
-            "ori_std_xyz": {"std_faix": 0.0, "std_faiy": 0.0, "std_faiz": 0.0},
-        },
-        "acceleration_std": {
-            "available": 0,
-            "acc_std_global": {"std_ae": 0.0, "std_an": 0.0, "std_au": 0.0},
-            "acc_std_local": {"std_ax": 0.0, "std_ay": 0.0, "std_az": 0.0},
-        },
-    }

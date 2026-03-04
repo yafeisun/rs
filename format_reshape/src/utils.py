@@ -48,7 +48,7 @@ LIDAR_PCD_MAP = {
 }
 
 LIDAR_CONCAT_SRC = "result/test_calibration/middle"
-LIDAR_CONCAT_DST = "sensor_data/lidar/lidar_concat"
+LIDAR_CONCAT_DST = "sensor_data/lidar/lidar_undist"
 SYNC_SENSORS_FILE = "result/test_calibration/sync_sensors.txt"
 
 LIDAR_MAP_SRC = "result/test_calibration/map_intensity_bev.pcd"

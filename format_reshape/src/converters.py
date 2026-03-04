@@ -311,7 +311,16 @@ def convert_pose_offline(src_bag_dir: str, target_dir: str) -> int:
     print(f"  [Pose Offline] Src: {src_path}")
     print(f"                 Dst: {target_json}")
 
-    # Transform poses to first frame coordinate system
+    #XJ|    # Keep absolute poses - DO NOT transform to first frame
+#XJ|    # pose_dict = transform_poses_to_first_frame(pose_dict)  # Commented out to keep absolute poses
+#XS|
+#XS|    # Debug: print first pose to verify it's absolute
+#XS|    if pose_dict:
+#XS|        first_key = sorted(pose_dict.keys(), key=lambda x: int(x))[0]
+#XS|        first_pose = pose_dict[first_key]
+#XS|        print(f"           First pose (ts={first_key}): x={first_pose[0]:.3f}, y={first_pose[1]:.3f}, z={first_pose[2]:.3f}")
+#XS|
+#JM|
     pose_dict = transform_poses_to_first_frame(pose_dict)
 
     # 只生成 JSON 文件，不生成单独的 JSON 文件
@@ -335,7 +344,17 @@ def convert_pose_from_dict(
     """通用pose转换函数"""
     abs_output_dir = target_dir
     create_directory(abs_output_dir)
-
+#KP|
+#XS|    # Keep absolute poses - DO NOT transform to first frame
+#XS|    # pose_dict = transform_poses_to_first_frame(pose_dict)  # Commented out to keep absolute poses
+#XS|
+#XS|    # Debug: print first pose to verify it's absolute
+#XS|    if pose_dict:
+#XS|        first_key = sorted(pose_dict.keys(), key=lambda x: int(x))[0]
+#XS|        first_pose = pose_dict[first_key]
+#XS|        print(f"           First pose (ts={first_key}): x={first_pose[0]:.3f}, y={first_pose[1]:.3f}, z={first_pose[2]:.3f}")
+#XS|
+#PR|
     pose_dict = transform_poses_to_first_frame(pose_dict)
     sorted_timestamps = sorted(pose_dict.keys(), key=lambda x: int(x))
     pose_messages = []

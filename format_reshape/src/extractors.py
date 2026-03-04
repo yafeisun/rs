@@ -115,15 +115,30 @@ def extract_lidar_pcd(src_bag_dir: str, target_dir: str) -> None:
 
 def extract_lidar_concat(src_bag_dir: str, target_dir: str) -> None:
     """
-    从 result/test_calibration/middle/*.pcd 拷贝到
+    从 result/test_calibration/middle/*.pcd 读取并转换坐标系后写入
+    sensor_data/lidar/lidar_undist/*.pcd
+
+    源 PCD 是 Body RFU 坐标系（速腾车体系：Y前、X右、Z上）。
+    目标格式要求 Body FLU（X前、Y左、Z上），即 lidar.yaml 中
+    r_s2b=[0,0,0]、t_s2b=[0,0,0] 所定义的与车体系重合的坐标系。
+
+    变换: R_rfu2flu = [[0,1,0],[-1,0,0],[0,0,1]]
+      x_flu =  y_rfu  (前方)
+      y_flu = -x_rfu  (左方)
+      z_flu =  z_rfu  (上方，不变)
+    """
+    """
+    从 result/test_calibration/middle/*.pcd 读取并转换坐标系后写入
     sensor_data/lidar/lidar_concat/*.pcd
 
-    源 PCD 已经是 Body FLU 坐标系（X前、Y左、Z上），与目标格式一致，
-    直接拷贝即可，无需坐标变换。
+    源 PCD 是 Body RFU 坐标系（速腾车体系：Y前、X右、Z上）。
+    目标格式要求 Body FLU（X前、Y左、Z上），即 lidar_concat.yaml 中
+    r_s2b=[0,0,0]、t_s2b=[0,0,0] 所定义的与车体系重合的坐标系。
 
-    注：速腾 result/test_calibration/middle 输出的点云已经过坐标系对齐，
-    是 Body FLU 坐标系，对应 lidar_concat.yaml 中 r_s2b=[0,0,0]、t_s2b=[0,0,0]
-    定义的与车体系重合的坐标系。
+    变换: R_rfu2flu = [[0,1,0],[-1,0,0],[0,0,1]]
+      x_flu =  y_rfu  (前方)
+      y_flu = -x_rfu  (左方)
+      z_flu =  z_rfu  (上方，不变)
     """
     src_dir = os.path.join(src_bag_dir, LIDAR_CONCAT_SRC)
     main_sync_file = os.path.join(
@@ -149,6 +164,11 @@ def extract_lidar_concat(src_bag_dir: str, target_dir: str) -> None:
     target_path = os.path.join(target_dir, LIDAR_CONCAT_DST)
     create_directory(target_path)
 
+    # RFU -> FLU rotation matrix: [[0,1,0],[-1,0,0],[0,0,1]]
+    R_rfu2flu = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], dtype=np.float64)
+    T_rfu2flu = np.eye(4)
+    T_rfu2flu[:3, :3] = R_rfu2flu
+
     copied = 0
     for i, pcd_file in enumerate(pcd_files):
         if i >= len(timestamps):
@@ -156,12 +176,14 @@ def extract_lidar_concat(src_bag_dir: str, target_dir: str) -> None:
         try:
             timestamp = timestamps[i]
             new_path = os.path.join(target_path, timestamp + ".pcd")
-            # 源 PCD 已是 Body FLU，直接拷贝
-            shutil.copy2(pcd_file, new_path)
+            # Read, transform RFU->FLU, write
+            points, header = read_pcd_binary(pcd_file)
+            points = transform_point_cloud(points, T_rfu2flu)
+            write_pcd_binary(new_path, points, header)
             copied += 1
         except Exception as e:
             print(f"  [LiDAR Concat] Error {pcd_file}: {e}")
-    print(f"  [LiDAR Concat] Done: {copied} files (Body FLU, no transform)")
+    print(f"  [LiDAR Concat] Done: {copied} files (Body RFU -> Body FLU)")
 def extract_lidar_map(src_bag_dir: str, target_dir: str) -> None:
     """拷贝 lidar 地图"""
     src_path = os.path.join(src_bag_dir, LIDAR_MAP_SRC)

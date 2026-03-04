@@ -9,7 +9,7 @@
 测试数据的目录文件说明：`doc/robosense.md`
 
 2个测试数据都是向前运动，对pcd和pose坐标系的判断应该与目标格式保持一致
-下游重点使用了目标格式里的 `sensor_data/lidar/lidar_concat`，pose用的是 `/sensor_data/egopose_opt/egopose_optpose`
+下游重点使用了目标格式里的 `sensor_data/lidar/lidar_undist`，pose用的是 `/sensor_data/egopose_opt/egopose_optpose`
 
 ---
 
@@ -19,7 +19,7 @@
 
 数据来源：
 1. `result/test_calibration/sync_sensors.txt`
-2. `sensor_data/lidar/lidar_concat/*.pcd` 的所有文件，按时间戳编号排序
+2. `sensor_data/lidar/lidar_undist/*.pcd` 的所有文件，按时间戳编号排序
 
 目标格式：`node_output/peral-dataproc/result.json`
 
@@ -30,9 +30,9 @@
 
 ### 去畸变后的拼接点云
 
-下游使用 `sensor_data/lidar/lidar_concat`
+下游使用 `sensor_data/lidar/lidar_undist`
 - 数据来源：`result/test_calibration/middle/*.pcd`，自然编号
-- 目标格式：`sensor_data/lidar/lidar_concat/*.pcd`，middle雷达时间戳编号
+- 目标格式：`sensor_data/lidar/lidar_undist/*.pcd`，middle雷达时间戳编号
 - 映射关系：`result/test_calibration/sync_sensors.txt`
 
 ### 主雷达位姿
@@ -82,7 +82,7 @@ bash scripts/run.sh
 |------|---------|------|
 | 相机图像拷贝 | `sensor_data/camera/` | 11路相机图像 |
 | 点云数据拷贝 | `sensor_data/lidar/` | 5路 lidar 点云 |
-| 拼接点云拷贝 | `sensor_data/lidar/lidar_concat/` | 拼接点云 |
+| 拼接点云拷贝 | `sensor_data/lidar/lidar_undist/` | 拼接点云 |
 | 标定参数转换 | `calibration/camera/` | 相机标定 YAML |
 | 标定参数转换 | `calibration/lidar/` | Lidar 标定 YAML |
 | 标定参数转换 | `calibration/virtual_camera/` | 虚拟相机标定（去畸变） |
@@ -216,7 +216,7 @@ Done! Success: 2, Failed: 0
 转换完成后，应验证以下时间戳对应关系是否正确：
 
 1. `sensor_data/egopose_opt/egopose_optpose/*.json` (雷达位姿)
-2. `sensor_data/lidar/lidar_concat/*.pcd` (点云 PCD)
+2. `sensor_data/lidar/lidar_undist/*.pcd` (点云 PCD)
 3. `node_output/peral-dataproc/result.json` (映射表)
 
 这3个文件的时间戳编号应该是一致的，数据也应该是一一对应的。

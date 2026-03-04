@@ -28,15 +28,15 @@
 │   └── slam_successed.txt                     # SLAM处理完成标记
 ├── raw/                                       # 原始数据目录
 │   ├── pcd/                                   # 点云数据目录
-│   |   ├── front/                             # 前激光雷达点云
+│   |   ├── front/                             # 前激光雷达点云 雷达坐标系 FLU
 │   |   │   └── *.pcd                          # PCD格式点云文件（按时间戳命名）
-│   |   ├── back/                              # 后激光雷达点云
+│   |   ├── back/                              # 后激光雷达点云 雷达坐标系 FLU
 │   |   │   └── *.pcd                          # PCD格式点云文件
-│   |   ├── left/                              # 左激光雷达点云
+│   |   ├── left/                              # 左激光雷达点云 雷达坐标系 FLU
 │   |   │   └── *.pcd                          # PCD格式点云文件
-│   |   ├── right/                             # 右激光雷达点云
+│   |   ├── right/                             # 右激光雷达点云 雷达坐标系 FLU
 │   |   │   └── *.pcd                          # PCD格式点云文件
-│   |   └── middle/                            # 主激光雷达点云
+│   |   └── middle/                            # 主激光雷达点云 雷达坐标系 FLU
 │   |       └── *.pcd                          # PCD格式点云文件
 │   ├── rtk_gps.txt                            # RTK GPS数据文件
 │   ├── rtk_imu.txt                            # RTK IMU数据文件
@@ -65,7 +65,7 @@
     │   ├── bbox/                              # 边界框标定结果
     │   ├── middle/                            # 主雷达和4个辅助雷达拼接后的点云，以自然序号排序，对应查看test_calibration/sync_sensors.txt
     |   |   ├── sync_sensors.txt               # 雷达位姿信息，主雷达和4个辅助雷达共享
-    │   │   └── *.pcd                          # PCD格式点云文件
+    │   │   └── *.pcd                          # PCD格式点云文件 车体坐标系 FLU
     │   ├── cam_*/                             # 各相机标定测试结果
     │   |   ├── sync_sensors.txt               # 相机传感器位姿信息
     |   ├── map_*.pcd                          # 全局地图点云
@@ -87,6 +87,8 @@
     ├── GT_ROI.bin                             # ROI区域真值数据（二进制格式）
     └── GT_ROI.csv                             # ROI区域真值数据（CSV格式）
 ```
+
+
 
 ## 文件命名规则
 

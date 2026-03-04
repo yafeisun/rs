@@ -800,12 +800,12 @@ def process_by_frame(frame, bag_dir_path, save_path, params, vis_box=False, vis_
 def process_by_bag(bag_dir_path, save_path, vis_box=False, vis_pcd=False, vis_box_in_pcd=False):
     # params = load_params(os.path.join(bag_dir_path, "calib_0308.json"))
 
-    params = load_params(os.path.join(bag_dir_path, "..", "S23_calib_0813.json"))
+    # calib.json is in the bag_dir_path directory (same level as frame directories)
+    params = load_params(os.path.join(bag_dir_path, "calib.json"))
     if params is None:
-        params = load_params(os.path.join(bag_dir_path, "calib.json"))
-        if params is None:
-            print("no cali.json or calib.json in bag dir: ", bag_dir_path)
-            # return None
+        params = load_params(os.path.join(bag_dir_path, "cali.json"))
+    if params is None:
+        print("no cali.json or calib.json in bag dir: ", bag_dir_path)
 
 
 
@@ -813,15 +813,11 @@ def process_by_bag(bag_dir_path, save_path, vis_box=False, vis_pcd=False, vis_bo
     frameList = os.listdir(bag_dir_path)
     frameList.sort()
 
-    with mp.Pool(processes=20) as pool:
-        pool.starmap_async(process_by_frame, [(frame, bag_dir_path, save_path, params, vis_box, vis_pcd, vis_box_in_pcd) for frame in frameList])
+    # Use multiprocessing for faster processing
+    with mp.Pool(processes=8) as pool:
+        pool.starmap(process_by_frame, [(frame, bag_dir_path, save_path, params, vis_box, vis_pcd, vis_box_in_pcd) for frame in frameList])
         pool.close()
         pool.join()
-
-    # for frame in frameList:
-    #     if len(frame) != 13:
-    #         continue
-    #     process_by_frame(frame, bag_dir_path, save_path, params, vis_box, vis_pcd, vis_box_in_pcd)
 
 def get_frame_loc(desc_path):
     with open(desc_path, 'r') as f:
@@ -928,7 +924,9 @@ def process_by_date(date_path, save_path, vis_box=False, vis_pcd=False, vis_box_
         return
     bag_dir_list = os.listdir(date_path)
     for bag_dir in bag_dir_list:
-        process_by_bag(os.path.join(date_path, bag_dir), save_path, vis_box, vis_pcd, vis_box_in_pcd)
+        bag_dir_path = os.path.join(date_path, bag_dir)
+        if os.path.isdir(bag_dir_path):
+            process_by_bag(bag_dir_path, save_path, vis_box, vis_pcd, vis_box_in_pcd)
 
 def process(gt_data_path, save_path, vis_box=False, vis_pcd=False, vis_box_in_pcd=False):
     if not os.path.exists(save_path):
@@ -936,15 +934,23 @@ def process(gt_data_path, save_path, vis_box=False, vis_pcd=False, vis_box_in_pc
     if not os.path.isdir(gt_data_path):
         print("gt_data_path is not a dir")
         return
-    date_dir_list = os.listdir(gt_data_path)
 
     if vis_box and not os.path.exists(os.path.join(save_path, "vis_box")):
         os.makedirs(os.path.join(save_path, "vis_box"))
     if vis_pcd and not os.path.exists(os.path.join(save_path, "vis_pcd")):
         os.makedirs(os.path.join(save_path, "vis_pcd"))
 
-    for date_dir in date_dir_list:
-        process_by_date(os.path.join(gt_data_path, date_dir), save_path, vis_box, vis_pcd, vis_box_in_pcd)
+    # Check if gt_data_path contains calib.json (it's a bag directory)
+    if os.path.exists(os.path.join(gt_data_path, "calib.json")) or os.path.exists(os.path.join(gt_data_path, "cali.json")):
+        # gt_data_path is already a bag directory
+        process_by_bag(gt_data_path, save_path, vis_box, vis_pcd, vis_box_in_pcd)
+    else:
+        # gt_data_path contains bag directories
+        bag_dir_list = os.listdir(gt_data_path)
+        for bag_dir in bag_dir_list:
+            bag_dir_path = os.path.join(gt_data_path, bag_dir)
+            if os.path.isdir(bag_dir_path):
+                process_by_bag(bag_dir_path, save_path, vis_box, vis_pcd, vis_box_in_pcd)
 
 
 if __name__ == "__main__":
@@ -953,8 +959,8 @@ if __name__ == "__main__":
         exit()
     gt_data_path = sys.argv[1]
     if len(sys.argv) < 3:
-        save_path = "vis_output"
+        # Generate output path alongside input directory with suffix
+        save_path = gt_data_path + "-vis"
     else:
         save_path = sys.argv[2]
-        save_path = os.path.join("./save_output", save_path)
     process(gt_data_path, save_path, vis_box=False, vis_pcd=True, vis_box_in_pcd=False)

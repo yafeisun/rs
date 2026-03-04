@@ -8,6 +8,7 @@ ROS Bag 格式转换工具 (主入口点)
 3. 标定参数转换
 4. Pose数据转换（在线/离线优化）
 5. IMU/GNSS/轮速数据提取
+6. 点云投影可视化验证（只生成 10 张例图，间隔 10 帧）
 
 使用：
     python3 main.py <数据根目录> [--target-root <目标根目录>]
@@ -22,6 +23,8 @@ ROS Bag 格式转换工具 (主入口点)
 """
 
 import os
+import re
+import argparse
 import subprocess
 import re
 import argparse
@@ -49,11 +52,11 @@ from .converters import (
     extract_wheel_from_bag,
 )
 from .utils import create_directory
+from . import projection
 
 
 # 时间戳目录格式: YYYY-MM-DD-HH-MM-SS
 TIMESTAMP_DIR_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}$")
-
 
 
 def find_valid_bag_dirs(root_path: str) -> List[str]:
@@ -93,15 +96,14 @@ def process_single_bag(src_dir: str, target_root: str) -> bool:
     Returns:
         处理是否成功
     """
-
-
-    # 从源路径提取最后两级目录作为目标子目录
     src_bag_dir = src_dir
-    target_root_param = target_root  # 临时保存参数以避免混淆
+    target_root_param = target_root
 
     src_path_parts = src_bag_dir.rstrip("/").split("/")
     if len(src_path_parts) >= 2:
-        target_dir = os.path.join(target_root_param, src_path_parts[-2], src_path_parts[-1])
+        target_dir = os.path.join(
+            target_root_param, src_path_parts[-2], src_path_parts[-1]
+        )
     else:
         target_dir = os.path.join(target_root_param, src_path_parts[-1])
 
@@ -145,36 +147,21 @@ def process_single_bag(src_dir: str, target_root: str) -> bool:
         extract_imu_from_bag(bag_path, target_dir)
         extract_gnss_from_bag(bag_path, target_dir)
         extract_wheel_from_bag(bag_path, target_dir)
+
         # 第四部分：可视化验证
         print(f"\n  [Visualization] Running projection verification...")
-        projection_script = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
-            "scripts/project_calib.py",
-        )
-        if os.path.exists(projection_script):
-            try:
-                subprocess.run(
-                    [
-                        "python3",
-                        projection_script,
-                        "--data-dir",
-                        target_dir,
-                        "--output-dir",
-                        "visualize",
-                    ],
-                    check=True,
-                )
-                print(
-                    f"                 Done: Visualization generated in {target_dir}/visualize/"
-                )
-            except subprocess.CalledProcessError as e:
-                print(f"                 Warning: Projection verification failed: {e}")
-        else:
-            print(
-                f"                 Warning: Projection script not found at {projection_script}"
+        try:
+            projection.run_projection_viz(
+                target_dir,
+                output_dir="visualize",
+                max_frames=10,  # 只生成 10 张例图
+                frame_interval=10,  # 每隔 10 帧处理一帧
             )
-
-        return True
+            print(
+                f"                 Done: Visualization generated in {target_dir}/visualize/"
+            )
+        except Exception as e:
+            print(f"                 Warning: Projection verification failed: {e}")
 
         return True
 
@@ -195,7 +182,7 @@ Example:
   
 Description:
   Recursively find directories matching YYYY-MM-DD-HH-MM-SS format with .bag files,
-  then perform batch format conversion.
+  then perform batch format conversion. Includes projection visualization (10 frames, interval 10).
         """,
     )
     parser.add_argument(
@@ -209,6 +196,11 @@ Description:
         type=str,
         default=None,
         help="Target root directory (optional, default: current directory)",
+    )
+    parser.add_argument(
+        "--no-viz",
+        action="store_true",
+        help="Disable projection visualization generation",
     )
 
     args = parser.parse_args()

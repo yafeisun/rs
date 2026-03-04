@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y \
 
 # 安装额外的 Python 包（如果需要）
 # 安装额外的 Python 包
-RUN pip3 install pyyaml numpy opencv-python
+RUN pip3 install pyyaml numpy opencv-python open3d
 # 创建非 root 用户（与宿主机用户匹配）
 RUN groupadd -g 1000 geely && \
     useradd -u 1000 -g geely -s /bin/bash -m geely && \
