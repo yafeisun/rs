@@ -18,6 +18,7 @@ from .pose import (
     build_extrinsics_matrix,
     euler_to_rotation_vector,
 )
+from .extractors import get_alignment_rotation
 from .utils import find_calibration_yaml, read_yaml_file
 
 
@@ -171,7 +172,14 @@ def generate_camera_poses(src_bag_dir: str, target_dir: str) -> None:
                 T_l2b[:3, :3] = R
                 T_l2b[:3, 3] = [c.get("x", 0), c.get("y", 0), c.get("z", 0)]
                 break
-    T_b2l = np.linalg.inv(T_l2b)
+    # Apply RFU->FLU transformation to lidar extrinsic
+    R_align_inv = get_alignment_rotation()
+    R_l2b_flu = R_align_inv @ T_l2b[:3, :3]
+    t_l2b_flu = R_align_inv @ T_l2b[:3, 3]
+    T_l2b_flu = np.eye(4)
+    T_l2b_flu[:3, :3] = R_l2b_flu
+    T_l2b_flu[:3, 3] = t_l2b_flu
+    T_b2l = np.linalg.inv(T_l2b_flu)
 
     camera_name_map = {
         "cam_around_back": "camera_rear_fisheye",
@@ -240,7 +248,14 @@ def generate_lidar_main_pose(src_bag_dir: str, target_dir: str) -> None:
                 T_l2b[:3, :3] = R
                 T_l2b[:3, 3] = [c.get("x", 0), c.get("y", 0), c.get("z", 0)]
                 break
-    T_b2l = np.linalg.inv(T_l2b)
+    # Apply RFU->FLU transformation to lidar extrinsic
+    R_align_inv = get_alignment_rotation()
+    R_l2b_flu = R_align_inv @ T_l2b[:3, :3]
+    t_l2b_flu = R_align_inv @ T_l2b[:3, 3]
+    T_l2b_flu = np.eye(4)
+    T_l2b_flu[:3, :3] = R_l2b_flu
+    T_l2b_flu[:3, 3] = t_l2b_flu
+    T_b2l = np.linalg.inv(T_l2b_flu)
     dst_path = f"{target_dir}/sensor_data/egopose_opt/egopose_optpose"
     os.makedirs(dst_path, exist_ok=True)
     with open(sync_file, "r") as f:
