@@ -127,19 +127,6 @@ def extract_lidar_concat(src_bag_dir: str, target_dir: str) -> None:
       y_flu = -x_rfu  (左方)
       z_flu =  z_rfu  (上方，不变)
     """
-    """
-    从 result/test_calibration/middle/*.pcd 读取并转换坐标系后写入
-    sensor_data/lidar/lidar_concat/*.pcd
-
-    源 PCD 是 Body RFU 坐标系（速腾车体系：Y前、X右、Z上）。
-    目标格式要求 Body FLU（X前、Y左、Z上），即 lidar_concat.yaml 中
-    r_s2b=[0,0,0]、t_s2b=[0,0,0] 所定义的与车体系重合的坐标系。
-
-    变换: R_rfu2flu = [[0,1,0],[-1,0,0],[0,0,1]]
-      x_flu =  y_rfu  (前方)
-      y_flu = -x_rfu  (左方)
-      z_flu =  z_rfu  (上方，不变)
-    """
     src_dir = os.path.join(src_bag_dir, LIDAR_CONCAT_SRC)
     main_sync_file = os.path.join(
         src_bag_dir, "result/test_calibration/sync_sensors.txt"
