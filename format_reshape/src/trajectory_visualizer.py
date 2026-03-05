@@ -109,7 +109,7 @@ def visualize_trajectory(pose_file, output_dir, pcd_file=None):
     print(f"  轨迹角度: {traj_angle:.1f}°, 车身X轴角度: {body_x_angle:.1f}°")
     print(f"  对齐误差: {align_err:.1f}°")
 
-    # 构建第一帧逆变换：PCD在世界坐标系，轨迹在局部坐标系（以第一帧为原点）
+    # 构建第一帧逆变换（备用，当前 PCD 已是局部坐标系无需使用）
     # T_world2local = inv(T_local2world) = [R0^T, -R0^T * t0; 0, 1]
     R0 = quat_to_rotation_matrix(qw[0], qx[0], qy[0], qz[0])
     t0 = np.array([x[0], y[0], z[0]])
@@ -117,12 +117,12 @@ def visualize_trajectory(pose_file, output_dir, pcd_file=None):
     T_world2local[:3, :3] = R0.T
     T_world2local[:3,  3] = -R0.T @ t0
 
-    # 加载 PCD 并变换到局部坐标系
+    # PCD 已经是车体 FLU 局部坐标系，轨迹也以第一帧为原点，直接叠加
     pcd_xy = None
     pcd_z  = None
     if pcd_file and os.path.exists(pcd_file):
         try:
-            pcd_xy, pcd_z = load_pcd_xy(pcd_file, T_world2local=T_world2local)
+            pcd_xy, pcd_z = load_pcd_xy(pcd_file)
             print(f"PCD加载成功，有效点数: {len(pcd_xy)}")
         except Exception as e:
             print(f"PCD加载失败: {e}")
