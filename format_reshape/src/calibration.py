@@ -157,22 +157,8 @@ def generate_node_output(src_bag_dir: str, target_dir: str) -> None:
 
 
 def generate_camera_poses(src_bag_dir: str, target_dir: str) -> None:
-    """生成相机位姿并使用精确的 LiDAR2Body 变换对齐。"""
+    """生成相机位姿。sync_sensors.txt 中 pose 已经是 body 在世界坐标中的位姿，直接使用。"""
     test_calib_dir = f"{src_bag_dir}/result/test_calibration"
-    src_yaml = find_calibration_yaml(src_bag_dir)
-    data = read_yaml_file(src_yaml)
-    T_l2b = np.eye(4)
-    if data:
-        for l in data.get("sensors", {}).get("lidar", []):
-            if l.get("topic") == "/middle/rslidar_packets_unique":
-                c = l.get("calibration", {})
-                R = euler_to_rotation_matrix(
-                    c.get("roll", 0), c.get("pitch", 0), c.get("yaw", 0)
-                )
-                T_l2b[:3, :3] = R
-                T_l2b[:3, 3] = [c.get("x", 0), c.get("y", 0), c.get("z", 0)]
-                break
-    T_b2l = np.linalg.inv(T_l2b)
 
     camera_name_map = {
         "cam_around_back": "camera_rear_fisheye",
@@ -200,15 +186,11 @@ def generate_camera_poses(src_bag_dir: str, target_dir: str) -> None:
                     continue
                 p = line.split()
                 ts = p[1].replace(".jpeg", "")
-                Ri = quat_to_rotation_matrix(
+                # sync_sensors.txt 中 pose 直接是 body 在世界坐标中的位姿
+                R_f = quat_to_rotation_matrix(
                     float(p[8]), float(p[5]), float(p[6]), float(p[7])
                 )
-                Ti = np.eye(4)
-                Ti[:3, :3] = Ri
-                Ti[:3, 3] = [float(p[2]), float(p[3]), float(p[4])]
-                T_w2b = Ti @ T_b2l
-                R_f = T_w2b[:3, :3]
-                t_f = T_w2b[:3, 3]
+                t_f = [float(p[2]), float(p[3]), float(p[4])]
                 qw_f, qx_f, qy_f, qz_f = rotation_matrix_to_quat(R_f)
                 msg = create_pose_message(
                     ts, [t_f[0], t_f[1], t_f[2], qx_f, qy_f, qz_f, qw_f]
@@ -228,20 +210,6 @@ def generate_lidar_main_pose(src_bag_dir: str, target_dir: str) -> None:
         v["camera_front_right"].replace(".jpeg", ""): k.replace(".pcd", "")
         for k, v in mapping.items()
     }
-    src_yaml = find_calibration_yaml(src_bag_dir)
-    data = read_yaml_file(src_yaml)
-    T_l2b = np.eye(4)
-    if data:
-        for l in data.get("sensors", {}).get("lidar", []):
-            if l.get("topic") == "/middle/rslidar_packets_unique":
-                c = l.get("calibration", {})
-                R = euler_to_rotation_matrix(
-                    c.get("roll", 0), c.get("pitch", 0), c.get("yaw", 0)
-                )
-                T_l2b[:3, :3] = R
-                T_l2b[:3, 3] = [c.get("x", 0), c.get("y", 0), c.get("z", 0)]
-                break
-    T_b2l = np.linalg.inv(T_l2b)
     dst_path = f"{target_dir}/sensor_data/egopose_opt/egopose_optpose"
     os.makedirs(dst_path, exist_ok=True)
     with open(sync_file, "r") as f:
@@ -253,14 +221,11 @@ def generate_lidar_main_pose(src_bag_dir: str, target_dir: str) -> None:
             if cam_ts not in cam_to_pcd:
                 continue
             pcd_ts = cam_to_pcd[cam_ts]
-            Ti = np.eye(4)
-            Ti[:3, :3] = quat_to_rotation_matrix(
+            # sync_sensors.txt 中 pose 直接是 body 在世界坐标中的位姿，直接使用
+            R_f = quat_to_rotation_matrix(
                 float(p[8]), float(p[5]), float(p[6]), float(p[7])
             )
-            Ti[:3, 3] = [float(p[2]), float(p[3]), float(p[4])]
-            T_w2b = Ti @ T_b2l
-            R_f = T_w2b[:3, :3]
-            t_f = T_w2b[:3, 3]
+            t_f = [float(p[2]), float(p[3]), float(p[4])]
             qw_f, qx_f, qy_f, qz_f = rotation_matrix_to_quat(R_f)
             msg = create_pose_message(
                 pcd_ts, [t_f[0], t_f[1], t_f[2], qx_f, qy_f, qz_f, qw_f]
