@@ -18,9 +18,10 @@ def quat_to_rotation_matrix(w, x, y, z):
     return R
 
 
-def load_pcd_xy(pcd_file, x_range=60.0, y_range=60.0, z_min=-3.0, z_max=8.0):
+def load_pcd_xy(pcd_file, z_min=-3.0, z_max=8.0, T_world2local=None):
     """
-    加载 PCD 并只保留车体附近的点（过滤远处噪点）。
+    加载 PCD（在世界坐标系下），变换到局部坐标系后过滤高度范围。
+    T_world2local: 4x4变换矩阵，将世界坐标系点变换到局部坐标系（可选）
     返回 (xy, z_vals) 均为 numpy array。
     """
     import open3d as o3d
@@ -31,14 +32,20 @@ def load_pcd_xy(pcd_file, x_range=60.0, y_range=60.0, z_min=-3.0, z_max=8.0):
     valid = ~np.isnan(pts).any(axis=1)
     pts = pts[valid]
 
-    # 只保留车体附近区域，避免远处噪点撑大视图
-    mask = (
-        (np.abs(pts[:, 0]) <= x_range) &
-        (np.abs(pts[:, 1]) <= y_range) &
-        (pts[:, 2] >= z_min) &
-        (pts[:, 2] <= z_max)
-    )
+    # PCD坐标系中车头朝-Y，需旋转使车头对齐+X（FLU前向）
+    # X_new = -Y_old, Y_new = X_old
+    R_pcd2flu = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=np.float64)
+    pts = (R_pcd2flu @ pts.T).T
+
+    # 变换到局部坐标系
+    if T_world2local is not None:
+        pts_h = np.hstack([pts, np.ones((len(pts), 1))])
+        pts = (T_world2local @ pts_h.T).T[:, :3]
+
+    # 只过滤高度范围
+    mask = (pts[:, 2] >= z_min) & (pts[:, 2] <= z_max)
     pts = pts[mask]
+
     return pts[:, :2], pts[:, 2]
 
 
@@ -107,12 +114,20 @@ def visualize_trajectory(pose_file, output_dir, pcd_file=None):
     print(f"  轨迹角度: {traj_angle:.1f}°, 车身X轴角度: {body_x_angle:.1f}°")
     print(f"  对齐误差: {align_err:.1f}°")
 
-    # 加载 PCD（只保留车体附近区域）
+    # 构建第一帧逆变换：PCD在世界坐标系，轨迹在局部坐标系（以第一帧为原点）
+    # T_world2local = inv(T_local2world) = [R0^T, -R0^T * t0; 0, 1]
+    R0 = quat_to_rotation_matrix(qw[0], qx[0], qy[0], qz[0])
+    t0 = np.array([x[0], y[0], z[0]])
+    T_world2local = np.eye(4)
+    T_world2local[:3, :3] = R0.T
+    T_world2local[:3,  3] = -R0.T @ t0
+
+    # 加载 PCD 并变换到局部坐标系
     pcd_xy = None
     pcd_z  = None
     if pcd_file and os.path.exists(pcd_file):
         try:
-            pcd_xy, pcd_z = load_pcd_xy(pcd_file)
+            pcd_xy, pcd_z = load_pcd_xy(pcd_file, T_world2local=T_world2local)
             print(f"PCD加载成功，有效点数: {len(pcd_xy)}")
         except Exception as e:
             print(f"PCD加载失败: {e}")
