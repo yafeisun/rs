@@ -2,7 +2,10 @@
 数据转换函数
 """
 
+import numpy as np
+
 import json
+import math
 import os
 from typing import Dict, List, Any
 from .bag_reader import BagReader, ROS_AVAILABLE
@@ -11,10 +14,54 @@ from .pose import (
     load_mapping_pose,
     create_pose_message,
     transform_poses_to_first_frame,
+    quat_to_rotation_matrix,
+    rotation_matrix_to_quat,
 )
 from .utils import create_directory, POSE_ONLINE_SRC, POSE_OFFLINE_SRC
 
 
+def transform_poses_rfu_to_flu(
+    pose_dict: Dict[str, List[float]],
+) -> Dict[str, List[float]]:
+    """将位姿从 RFU (Y前进) 转换到 FLU (X前进) 轴的坐标系
+    
+    RFU: Right-Forward-Up (Y前进，X右，Z上)
+    FLU: Front-Left-Up   (X前进，Y左，Z上)
+    
+    转换: x_flu =  y_rfu  (前方)
+          y_flu = -x_rfu  (左方)
+          z_flu =  z_rfu  (上方)
+    
+    旋转变换: R_flu = R_rfu2flu @ R_rfu (正确的公式)
+    """
+    # RFU -> FLU 旋转矩阵: [[0,1,0],[-1,0,0],[0,0,1]]
+    # 这个矩阵表示：[FLU_X, FLU_Y, FLU_Z] = [RFU_Y, -RFU_X, RFU_Z]
+    R_rfu2flu = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], dtype=np.float64)
+    
+    result = {}
+    for key, pose in pose_dict.items():
+        x, y, z, qx, qy, qz, qw = pose
+        
+        # 转换位置
+        p_rfu = np.array([x, y, z])
+        p_flu = R_rfu2flu @ p_rfu
+        
+        # 转换方向: R_flu = R_rfu2flu @ R_rfu
+        R_rfu = quat_to_rotation_matrix(qw, qx, qy, qz)
+        R_flu = R_rfu2flu @ R_rfu
+        qw_flu, qx_flu, qy_flu, qz_flu = rotation_matrix_to_quat(R_flu)
+        
+        result[key] = [
+            float(p_flu[0]),
+            float(p_flu[1]),
+            float(p_flu[2]),
+            qx_flu,
+            qy_flu,
+            qz_flu,
+            qw_flu,
+        ]
+    
+    return result
 def extract_imu_from_bag(bag_path: str, target_dir: str) -> int:
     """从bag提取IMU数据，返回记录数"""
     if not bag_path:
@@ -311,19 +358,21 @@ def convert_pose_offline(src_bag_dir: str, target_dir: str) -> int:
     print(f"  [Pose Offline] Src: {src_path}")
     print(f"                 Dst: {target_json}")
 
-    #XJ|    # Keep absolute poses - DO NOT transform to first frame
-#XJ|    # pose_dict = transform_poses_to_first_frame(pose_dict)  # Commented out to keep absolute poses
-#XS|
-#XS|    # Debug: print first pose to verify it's absolute
-#XS|    if pose_dict:
-#XS|        first_key = sorted(pose_dict.keys(), key=lambda x: int(x))[0]
-#XS|        first_pose = pose_dict[first_key]
-#XS|        print(f"           First pose (ts={first_key}): x={first_pose[0]:.3f}, y={first_pose[1]:.3f}, z={first_pose[2]:.3f}")
-#XS|
-#JM|
+    # 源 pose 数据 (mapping_pose_quaterniond.txt) 是全局绝对坐标，转换到第一帧相对坐标
     pose_dict = transform_poses_to_first_frame(pose_dict)
 
-    # 只生成 JSON 文件，不生成单独的 JSON 文件
+    # 修正车体朝向: 源数据 body X=右(RFU)，目标需要 X=前(FLU)
+    # 只调整旋转，不改变位置: R_flu = R @ R_rfu2flu (后乘，重定义body轴方向)
+    R_rfu2flu = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], dtype=np.float64)
+    fixed = {}
+    for key, pose in pose_dict.items():
+        x, y, z, qx, qy, qz, qw = pose
+        R = quat_to_rotation_matrix(qw, qx, qy, qz)
+        R_fixed = R @ R_rfu2flu
+        qw_f, qx_f, qy_f, qz_f = rotation_matrix_to_quat(R_fixed)
+        fixed[key] = [x, y, z, qx_f, qy_f, qz_f, qw_f]
+    pose_dict = fixed
+
     sorted_timestamps = sorted(pose_dict.keys(), key=lambda x: int(x))
     pose_messages = []
 
@@ -344,17 +393,6 @@ def convert_pose_from_dict(
     """通用pose转换函数"""
     abs_output_dir = target_dir
     create_directory(abs_output_dir)
-#KP|
-#XS|    # Keep absolute poses - DO NOT transform to first frame
-#XS|    # pose_dict = transform_poses_to_first_frame(pose_dict)  # Commented out to keep absolute poses
-#XS|
-#XS|    # Debug: print first pose to verify it's absolute
-#XS|    if pose_dict:
-#XS|        first_key = sorted(pose_dict.keys(), key=lambda x: int(x))[0]
-#XS|        first_pose = pose_dict[first_key]
-#XS|        print(f"           First pose (ts={first_key}): x={first_pose[0]:.3f}, y={first_pose[1]:.3f}, z={first_pose[2]:.3f}")
-#XS|
-#PR|
     pose_dict = transform_poses_to_first_frame(pose_dict)
     sorted_timestamps = sorted(pose_dict.keys(), key=lambda x: int(x))
     pose_messages = []

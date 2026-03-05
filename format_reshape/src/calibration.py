@@ -6,6 +6,7 @@ import os
 import glob
 import json
 import yaml
+import math
 import numpy as np
 import cv2
 from typing import Optional, Dict, List
@@ -18,7 +19,6 @@ from .pose import (
     build_extrinsics_matrix,
     euler_to_rotation_vector,
 )
-from .extractors import get_alignment_rotation
 from .utils import find_calibration_yaml, read_yaml_file
 
 
@@ -172,14 +172,7 @@ def generate_camera_poses(src_bag_dir: str, target_dir: str) -> None:
                 T_l2b[:3, :3] = R
                 T_l2b[:3, 3] = [c.get("x", 0), c.get("y", 0), c.get("z", 0)]
                 break
-    # Apply RFU->FLU transformation to lidar extrinsic
-    R_align_inv = get_alignment_rotation()
-    R_l2b_flu = R_align_inv @ T_l2b[:3, :3]
-    t_l2b_flu = R_align_inv @ T_l2b[:3, 3]
-    T_l2b_flu = np.eye(4)
-    T_l2b_flu[:3, :3] = R_l2b_flu
-    T_l2b_flu[:3, 3] = t_l2b_flu
-    T_b2l = np.linalg.inv(T_l2b_flu)
+    T_b2l = np.linalg.inv(T_l2b)
 
     camera_name_map = {
         "cam_around_back": "camera_rear_fisheye",
@@ -248,14 +241,10 @@ def generate_lidar_main_pose(src_bag_dir: str, target_dir: str) -> None:
                 T_l2b[:3, :3] = R
                 T_l2b[:3, 3] = [c.get("x", 0), c.get("y", 0), c.get("z", 0)]
                 break
-    # Apply RFU->FLU transformation to lidar extrinsic
-    R_align_inv = get_alignment_rotation()
-    R_l2b_flu = R_align_inv @ T_l2b[:3, :3]
-    t_l2b_flu = R_align_inv @ T_l2b[:3, 3]
-    T_l2b_flu = np.eye(4)
-    T_l2b_flu[:3, :3] = R_l2b_flu
-    T_l2b_flu[:3, 3] = t_l2b_flu
-    T_b2l = np.linalg.inv(T_l2b_flu)
+    T_b2l = np.linalg.inv(T_l2b)
+    # 修正车体朝向: 源数据 body X=右(RFU)，目标需要 X=前(FLU)
+    # 后乘 R_rfu2flu 重定义body轴方向，不影响位置
+    R_rfu2flu = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], dtype=np.float64)
     dst_path = f"{target_dir}/sensor_data/egopose_opt/egopose_optpose"
     os.makedirs(dst_path, exist_ok=True)
     with open(sync_file, "r") as f:
@@ -275,7 +264,9 @@ def generate_lidar_main_pose(src_bag_dir: str, target_dir: str) -> None:
             T_w2b = Ti @ T_b2l
             R_f = T_w2b[:3, :3]
             t_f = T_w2b[:3, 3]
-            qw_f, qx_f, qy_f, qz_f = rotation_matrix_to_quat(R_f)
+            # 后乘 R_rfu2flu 修正body轴方向: X前,Y左(FLU)
+            R_fixed = R_f @ R_rfu2flu
+            qw_f, qx_f, qy_f, qz_f = rotation_matrix_to_quat(R_fixed)
             msg = create_pose_message(
                 pcd_ts, [t_f[0], t_f[1], t_f[2], qx_f, qy_f, qz_f, qw_f]
             )
