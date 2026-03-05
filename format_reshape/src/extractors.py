@@ -118,13 +118,7 @@ def extract_lidar_concat(src_bag_dir: str, target_dir: str) -> None:
     从 result/test_calibration/middle/*.pcd 读取并转换坐标系后写入
     sensor_data/lidar/lidar_undist/*.pcd
 
-    源 PCD 是 Body RFU 坐标系（速腾车体系：Y前、X右、Z上）。
-    目标格式要求 Body FLU（X前、Y左、Z上），与 calib_anno T_b2c 外参匹配。
-
-    变换: R_rfu2flu = [[0,1,0],[-1,0,0],[0,0,1]]
-      x_flu =  y_rfu  (前方)
-      y_flu = -x_rfu  (左方)
-      z_flu =  z_rfu  (上方，不变)
+    源 PCD 已经是 Body FLU 坐标系（X前、Y左、Z上），直接写入，无需坐标变换。
     """
     src_dir = os.path.join(src_bag_dir, LIDAR_CONCAT_SRC)
     main_sync_file = os.path.join(
@@ -150,11 +144,6 @@ def extract_lidar_concat(src_bag_dir: str, target_dir: str) -> None:
     target_path = os.path.join(target_dir, LIDAR_CONCAT_DST)
     create_directory(target_path)
 
-    # RFU -> FLU rotation matrix
-    R_rfu2flu = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], dtype=np.float64)
-    T_rfu2flu = np.eye(4)
-    T_rfu2flu[:3, :3] = R_rfu2flu
-
     copied = 0
     for i, pcd_file in enumerate(pcd_files):
         if i >= len(timestamps):
@@ -163,12 +152,11 @@ def extract_lidar_concat(src_bag_dir: str, target_dir: str) -> None:
             timestamp = timestamps[i]
             new_path = os.path.join(target_path, timestamp + ".pcd")
             points, header = read_pcd_binary(pcd_file)
-            points = transform_point_cloud(points, T_rfu2flu)
             write_pcd_binary(new_path, points, header)
             copied += 1
         except Exception as e:
             print(f"  [LiDAR Concat] Error {pcd_file}: {e}")
-    print(f"  [LiDAR Concat] Done: {copied} files (Body RFU -> Body FLU)")
+    print(f"  [LiDAR Concat] Done: {copied} files (already Body FLU, no transform needed)")
 def extract_lidar_map(src_bag_dir: str, target_dir: str) -> None:
     """拷贝 lidar 地图"""
     src_path = os.path.join(src_bag_dir, LIDAR_MAP_SRC)
@@ -214,17 +202,12 @@ def extract_calibration(src_bag_dir: str, target_dir: str) -> None:
         cal = cam_data.get("calibration", {})
         cam_ext = cal.get("CameraExt", {})
 
-        # 旋转外参 R和t 到 FLU
+        # CameraExt 已经是 FLU body 坐标系，直接使用
         rvec_old = euler_to_rotation_vector(
             cam_ext.get("roll", 0), cam_ext.get("pitch", 0), cam_ext.get("yaw", 0)
         )
-        T_c2rfu = build_extrinsics_matrix(
-            np.array(rvec_old),
-            np.array([cam_ext.get("x", 0), cam_ext.get("y", 0), cam_ext.get("z", 0)]),
-        )
-        R_flu = R_align_inv @ T_c2rfu[:3, :3]
-        t_flu = R_align_inv @ T_c2rfu[:3, 3]
-        rvec_flu, _ = cv2.Rodrigues(R_flu)
+        t_flu = np.array([cam_ext.get("x", 0), cam_ext.get("y", 0), cam_ext.get("z", 0)])
+        rvec_flu = np.array(rvec_old)
 
         target_calib = {
             "CLOCK_calib_version": "N/A",
@@ -298,15 +281,11 @@ def extract_calibration(src_bag_dir: str, target_dir: str) -> None:
         if src_topic not in lidar_index:
             continue
         cal = lidar_index[src_topic].get("calibration", {})
-        rvec_old = euler_to_rotation_vector(
+        # LiDAR 外参已经是 FLU body 坐标系，直接使用
+        rvec = euler_to_rotation_vector(
             cal.get("roll", 0), cal.get("pitch", 0), cal.get("yaw", 0)
         )
-        T_old = build_extrinsics_matrix(
-            np.array(rvec_old),
-            np.array([cal.get("x", 0), cal.get("y", 0), cal.get("z", 0)]),
-        )
-        R_flu = R_align_inv @ T_old[:3, :3]
-        t_flu = R_align_inv @ T_old[:3, 3]
+        t = np.array([cal.get("x", 0), cal.get("y", 0), cal.get("z", 0)])
         target_calib = {
             "calib_version": "",
             "calib_detailes": "factory",
@@ -315,8 +294,8 @@ def extract_calibration(src_bag_dir: str, target_dir: str) -> None:
             "sensor_type": "LiDAR",
             "timestamp_shift": 0,
             "vehicle_xyz": "front_left_up",
-            "r_s2b": cv2.Rodrigues(R_flu)[0].flatten().tolist(),
-            "t_s2b": [float(t_flu[0]), float(t_flu[1]), float(t_flu[2])],
+            "r_s2b": list(rvec),
+            "t_s2b": [float(t[0]), float(t[1]), float(t[2])],
             "width": 1800,
             "height": LIDAR_HEIGHT_MAP.get(
                 lidar_index[src_topic].get("lidar_type"), 128

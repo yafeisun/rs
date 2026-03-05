@@ -32,11 +32,6 @@ def load_pcd_xy(pcd_file, z_min=-3.0, z_max=8.0, T_world2local=None):
     valid = ~np.isnan(pts).any(axis=1)
     pts = pts[valid]
 
-    # PCD坐标系中车头朝-Y，需旋转使车头对齐+X（FLU前向）
-    # X_new = -Y_old, Y_new = X_old
-    R_pcd2flu = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=np.float64)
-    pts = (R_pcd2flu @ pts.T).T
-
     # 变换到局部坐标系
     if T_world2local is not None:
         pts_h = np.hstack([pts, np.ones((len(pts), 1))])

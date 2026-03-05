@@ -8,14 +8,16 @@ ROS Bag 格式转换工具 (主入口点)
 3. 标定参数转换
 4. Pose数据转换（在线/离线优化）
 5. IMU/GNSS/轮速数据提取
-6. 点云投影可视化验证（只生成 10 张例图，间隔 10 帧）
+6. 轨迹可视化（行车轨迹图）
+7. 点云投影可视化验证（只生成 10 张例图，间隔 10 帧）
 
 使用：
-    python3 main.py <数据根目录> [--target-root <目标根目录>]
+    python3 main.py <数据根目录> [--target-root <目标根目录>] [--no-viz]
 
 示例：
     python3 main.py /path/to/data_root
     python3 main.py /path/to/data_root --target-root /path/to/output
+    python3 main.py /path/to/data_root --no-viz
 
 说明：
     程序会递归查找符合 YYYY-MM-DD-HH-MM-SS 格式且包含 .bag 文件的目录，
@@ -23,9 +25,6 @@ ROS Bag 格式转换工具 (主入口点)
 """
 
 import os
-import re
-import argparse
-import subprocess
 import re
 import argparse
 from typing import List
@@ -53,6 +52,7 @@ from .converters import (
 )
 from .utils import create_directory
 from . import projection
+from .trajectory_visualizer import visualize_trajectory
 
 
 # 时间戳目录格式: YYYY-MM-DD-HH-MM-SS
@@ -85,13 +85,14 @@ def find_valid_bag_dirs(root_path: str) -> List[str]:
     return valid_dirs
 
 
-def process_single_bag(src_dir: str, target_root: str) -> bool:
+def process_single_bag(src_dir: str, target_root: str, enable_viz: bool = True) -> bool:
     """
     处理单个 bag 目录
 
     Args:
         src_dir: 源 bag 目录路径
         target_root: 目标根目录
+        enable_viz: 是否启用投影可视化
 
     Returns:
         处理是否成功
@@ -148,20 +149,38 @@ def process_single_bag(src_dir: str, target_root: str) -> bool:
         extract_gnss_from_bag(bag_path, target_dir)
         extract_wheel_from_bag(bag_path, target_dir)
 
-        # 第四部分：可视化验证
-        print(f"\n  [Visualization] Running projection verification...")
-        try:
-            projection.run_projection_viz(
-                target_dir,
-                output_dir="visualize",
-                max_frames=10,  # 只生成 10 张例图
-                frame_interval=10,  # 每隔 10 帧处理一帧
-            )
-            print(
-                f"                 Done: Visualization generated in {target_dir}/visualize/"
-            )
-        except Exception as e:
-            print(f"                 Warning: Projection verification failed: {e}")
+        # 第四部分：轨迹可视化
+        pose_file = os.path.join(target_dir, "sensor_data/egopose_opt.json")
+        output_dir = os.path.join(target_dir, "visualize")
+        if os.path.exists(pose_file):
+            print(f"\n  [Trajectory Visualization] Generating trajectory plot...")
+            try:
+                visualize_trajectory(pose_file, output_dir)
+                print(
+                    f"                  Done: Trajectory plot saved to {output_dir}/trajectory_visualization.png"
+                )
+            except Exception as e:
+                print(
+                    f"                  Warning: Trajectory visualization failed: {e}"
+                )
+        else:
+            print(f"                  Skipped: No pose file found at {pose_file}")
+
+        # 第五部分：投影可视化验证（可选）
+        if enable_viz:
+            print(f"\n  [Projection Visualization] Running projection verification...")
+            try:
+                projection.run_projection_viz(
+                    target_dir,
+                    output_dir="visualize",
+                    max_frames=10,  # 只生成 10 张例图
+                    frame_interval=10,  # 每隔 10 帧处理一帧
+                )
+                print(
+                    f"                 Done: Projection visualization in {target_dir}/visualize/"
+                )
+            except Exception as e:
+                print(f"                 Warning: Projection verification failed: {e}")
 
         return True
 
@@ -179,10 +198,13 @@ def main():
 Example:
   python3 main.py /path/to/data_root
   python3 main.py /path/to/data_root --target-root /path/to/output
-  
+  python3 main.py /path/to/data_root --no-viz
+
 Description:
   Recursively find directories matching YYYY-MM-DD-HH-MM-SS format with .bag files,
-  then perform batch format conversion. Includes projection visualization (10 frames, interval 10).
+  then perform batch format conversion. Includes:
+    - Trajectory visualization (vehicle trajectory plot)
+    - Projection visualization (10 frames, interval 10, disabled with --no-viz)
         """,
     )
     parser.add_argument(
@@ -232,7 +254,7 @@ Description:
 
     for i, src_dir in enumerate(valid_dirs, 1):
         print(f"\n[{i}/{len(valid_dirs)}] {src_dir}")
-        if process_single_bag(src_dir, target_root):
+        if process_single_bag(src_dir, target_root, enable_viz=not args.no_viz):
             success_count += 1
         else:
             fail_count += 1
@@ -245,17 +267,17 @@ if __name__ == "__main__":
     # 显示检测到的 ROS 版本
     if ROS_AVAILABLE == "ros1":
         print("=" * 60)
-        print("ROS Bag 格式转换工具 (改进版 + ROS 2 支持)")
+        print("ROS Bag 格式转换工具 - 最终版 (集成轨迹可视化)")
         print(f"检测到 ROS 版本: ROS 1 (Noetic)")
         print("=" * 60)
     elif ROS_AVAILABLE == "ros2":
         print("=" * 60)
-        print("ROS Bag 格式转换工具 (改进版 + ROS 2 支持)")
+        print("ROS Bag 格式转换工具 - 最终版 (集成轨迹可视化)")
         print(f"检测到 ROS 版本: ROS 2 (支持 .db3/.mcap 格式)")
         print("=" * 60)
     else:
         print("=" * 60)
-        print("ROS Bag 格式转换工具 (改进版 + ROS 2 支持)")
+        print("ROS Bag 格式转换工具 - 最终版 (集成轨迹可视化)")
         print("错误: 未检测到 ROS 1 或 ROS 2 的 bag 库")
         print("  - ROS 1: 请安装 ros-noetic-rosbag")
         print("  - ROS 2: 请安装 rosbag2-py")

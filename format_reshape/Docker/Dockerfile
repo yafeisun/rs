@@ -8,9 +8,12 @@ RUN apt-get update && apt-get install -y \
     python3-opencv \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装额外的 Python 包（如果需要）
-# 安装额外的 Python 包
-RUN pip3 install pyyaml numpy opencv-python open3d
+# 安装额外的 Python 包（包含轨迹可视化依赖）
+# 分开安装以避免一次性下载过多包导致超时
+RUN pip3 install --default-timeout=1000 --retries=3 opencv-python
+RUN pip3 install --default-timeout=1000 --retries=3 open3d matplotlib scipy
+RUN pip3 install pyyaml numpy opencv-python open3d matplotlib scipy
+
 # 创建非 root 用户（与宿主机用户匹配）
 RUN groupadd -g 1000 geely && \
     useradd -u 1000 -g geely -s /bin/bash -m geely && \
