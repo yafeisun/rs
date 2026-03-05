@@ -359,19 +359,8 @@ def convert_pose_offline(src_bag_dir: str, target_dir: str) -> int:
     print(f"                 Dst: {target_json}")
 
     # 源 pose 数据 (mapping_pose_quaterniond.txt) 是全局绝对坐标，转换到第一帧相对坐标
+    # 验证: 源数据 body X 轴已指向行进方向 (FLU)，不需要额外的轴旋转
     pose_dict = transform_poses_to_first_frame(pose_dict)
-
-    # 修正车体朝向: 源数据 body X=右(RFU)，目标需要 X=前(FLU)
-    # 只调整旋转，不改变位置: R_flu = R @ R_rfu2flu (后乘，重定义body轴方向)
-    R_rfu2flu = np.array([[0, 1, 0], [-1, 0, 0], [0, 0, 1]], dtype=np.float64)
-    fixed = {}
-    for key, pose in pose_dict.items():
-        x, y, z, qx, qy, qz, qw = pose
-        R = quat_to_rotation_matrix(qw, qx, qy, qz)
-        R_fixed = R @ R_rfu2flu
-        qw_f, qx_f, qy_f, qz_f = rotation_matrix_to_quat(R_fixed)
-        fixed[key] = [x, y, z, qx_f, qy_f, qz_f, qw_f]
-    pose_dict = fixed
 
     sorted_timestamps = sorted(pose_dict.keys(), key=lambda x: int(x))
     pose_messages = []
