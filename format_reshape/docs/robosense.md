@@ -28,15 +28,15 @@
 │   └── slam_successed.txt                     # SLAM处理完成标记
 ├── raw/                                       # 原始数据目录
 │   ├── pcd/                                   # 点云数据目录
-│   |   ├── front/                             # 前激光雷达点云 雷达坐标系 FLU
+│   |   ├── front/                             # 前激光雷达点云 雷达坐标系 RFU
 │   |   │   └── *.pcd                          # PCD格式点云文件（按时间戳命名）
-│   |   ├── back/                              # 后激光雷达点云 雷达坐标系 FLU
+│   |   ├── back/                              # 后激光雷达点云 雷达坐标系 RFU
 │   |   │   └── *.pcd                          # PCD格式点云文件
-│   |   ├── left/                              # 左激光雷达点云 雷达坐标系 FLU
+│   |   ├── left/                              # 左激光雷达点云 雷达坐标系 RFU
 │   |   │   └── *.pcd                          # PCD格式点云文件
-│   |   ├── right/                             # 右激光雷达点云 雷达坐标系 FLU
+│   |   ├── right/                             # 右激光雷达点云 雷达坐标系 RFU
 │   |   │   └── *.pcd                          # PCD格式点云文件
-│   |   └── middle/                            # 主激光雷达点云 雷达坐标系 FLU
+│   |   └── middle/                            # 主激光雷达点云 雷达坐标系 RFU
 │   |       └── *.pcd                          # PCD格式点云文件
 │   ├── rtk_gps.txt                            # RTK GPS数据文件
 │   ├── rtk_imu.txt                            # RTK IMU数据文件
@@ -65,7 +65,8 @@
     │   ├── bbox/                              # 边界框标定结果
     │   ├── middle/                            # 主雷达和4个辅助雷达拼接后的点云，以自然序号排序，对应查看test_calibration/sync_sensors.txt
     |   |   ├── sync_sensors.txt               # 雷达位姿信息，主雷达和4个辅助雷达共享
-    │   │   └── *.pcd                          # PCD格式点云文件 车体坐标系 FLU
+    │   │   ├── sync_sensors.txt               # 雷达位姿信息，主雷达和4个辅助雷达共享
+    │   │   └── *.pcd                          # PCD格式点云文件 车体坐标系 FLU (拼接后的点云，已从雷达RFU转换到车体FLU)
     │   ├── cam_*/                             # 各相机标定测试结果
     │   |   ├── sync_sensors.txt               # 相机传感器位姿信息
     |   ├── map_*.pcd                          # 全局地图点云
@@ -99,6 +100,14 @@
 ### 点云文件
 - 格式：`<timestamp>.pcd`
 - PCD（Point Cloud Data）格式，包含三维点云数据
+
+## 坐标系说明
+
+| 目录 | 坐标系 | 说明 |
+|------|--------|------|
+| `raw/pcd/*/` | 雷达RFU | 单独雷达点云，雷达自身坐标系（X右，Y前，Z上） |
+| `result/test_calibration/middle/` | Body FLU | 拼接点云，车体坐标系（X前，Y左，Z上） |
+
 
 ## 传感器分布
 
