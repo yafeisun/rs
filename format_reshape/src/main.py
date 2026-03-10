@@ -53,6 +53,7 @@ from .converters import (
 from .utils import create_directory
 from . import projection
 from .trajectory_visualizer import visualize_trajectory
+from .ipm_generator import generate_ipm
 
 
 # 时间戳目录格式: YYYY-MM-DD-HH-MM-SS
@@ -166,7 +167,14 @@ def process_single_bag(src_dir: str, target_root: str, enable_viz: bool = True) 
         else:
             print(f"                  Skipped: No pose file found at {pose_file}")
 
-        # 第五部分：投影可视化验证（可选）
+        # 第五部分：IPM生成
+        print(f"\n  [IPM] Generating fisheye BEV images...")
+        try:
+            generate_ipm(target_dir)
+        except Exception as e:
+            print(f"                 Warning: IPM generation failed: {e}")
+
+        # 第六部分：投影可视化验证（可选）
         if enable_viz:
             print(f"\n  [Projection Visualization] Running projection verification...")
             try:

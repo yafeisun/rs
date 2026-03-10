@@ -97,6 +97,7 @@ bash scripts/run.sh
 | 时间戳映射 | `node_output/peral-dataproc/result_full11v.json` | 点云→相机+result映射 |
 | 相机位姿 | `sensor_data/egopose_opt/camera_*/` | 各相机位姿数据 |
 | 主雷达位姿 | `sensor_data/egopose_opt/egopose_optpose/` | 主雷达位姿数据 |
+| IPM 鸟瞰图 | `node_output/ipm/` | 4路鱼眼拼接的BEV图像 |
 | 可视化验证 | `visualize/` | 点云投影验证图像（自动生成） |
 
 ---
@@ -123,6 +124,46 @@ visualize/
 
 ---
 
+## IPM 鸟瞰图生成
+
+### 功能说明
+
+将4路鱼眼相机（前/后/左/右）拼接为鸟瞰图（Bird's Eye View），用于环视感知和可视化。
+
+### 生成方式
+
+```bash
+# 为单个片段生成IPM
+python3 src/ipm_generator.py /path/to/output/605/2025-11-21-16-15-45
+
+# 限制生成帧数（用于测试）
+python3 src/ipm_generator.py /path/to/output/605/2025-11-21-16-15-45 --max-frames 10
+```
+
+### 输出格式
+
+```
+node_output/ipm/
+├── ipm_1763712945233000000.jpeg    # 使用前鱼眼时间戳命名
+├── ipm_1763712945333000000.jpeg
+└── ...
+```
+
+### 技术细节
+
+- **投影策略**：全投影模式，所有4路鱼眼都投影到整个BEV区域，后投影覆盖先投影
+- **投影顺序**：前鱼眼 → 后鱼眼 → 左鱼眼 → 右鱼眼
+- **去畸变**：使用 `cv2.fisheye.initUndistortRectifyMap` 处理鱼眼畸变
+- **BEV范围**：X[-20m, 30m], Y[-10m, 10m]，分辨率0.05m/pixel
+- **坐标系**：FLU（X前，Y左，Z上），原点在车辆后轴中心
+- **文件命名**：使用前鱼眼（camera_front_fisheye）的时间戳
+
+### 参考实现
+
+完全参考速腾IPM的SOTA实现方式，确保拼接效果无黑色空洞。
+
+---
+
 ## 项目结构
 
 ```
@@ -135,6 +176,7 @@ format_reshape/
 │   ├── converters.py             # 数据转换（pose、IMU、GNSS、轮速）
 │   ├── calibration.py           # 标定参数处理
 │   ├── pose.py                  # Pose 数据处理
+│   ├── ipm_generator.py          # IPM 鸟瞰图生成
 │   └── utils.py                 # 工具函数
 ├── scripts/
 │   ├── project_calib.py        # 可视化投影验证脚本
