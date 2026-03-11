@@ -1,10 +1,10 @@
 """
 BEV4D格式数据的IPM生成模块
 
-参考速腾IPM实现：所有相机全投影到同一张BEV图，后投影覆盖先投影。
+严格参考速腾IPM实现：所有相机全投影到同一张BEV图，后投影覆盖先投影。
 投影顺序决定重叠区域的优先级。
 
-BEV范围: X[-20m, 30m], Y[-10m, 10m], 分辨率0.05m
+BEV范围: X[-20m, 30m], Y[-10m, 10m], 分辨率0.01m
 """
 
 import os
@@ -16,9 +16,12 @@ from scipy.spatial.transform import Rotation as R
 
 
 # BEV4D格式的鱼眼相机列表
+# 投影顺序：后覆盖先（与速腾around一致：back->front->left->right）
+# 速腾around: cam_around_back -> cam_around_front -> cam_around_left -> cam_around_right -> cam_front_left
+# 对应BEV4D: camera_rear_fisheye -> camera_front_fisheye -> camera_left_fisheye -> camera_right_fisheye
 FISHEYE_CAM_NAMES = [
-    "camera_front_fisheye",
     "camera_rear_fisheye",
+    "camera_front_fisheye",
     "camera_left_fisheye",
     "camera_right_fisheye",
 ]
@@ -209,105 +212,47 @@ class BevProjector:
 
         return bev_img
 
-    def bev_to_pixel(self, x, y, dtype=np.int32):
-        """BEV coordinate转pixel coordinate"""
-        return np.array(
-            [(x - self.min_x) / self.res, (self.max_y - y) / self.res], dtype
-        )
-
-    def pixel_to_bev(self, x, y, dtype=np.int32):
-        """Pixel coordinate to BEV coordinate"""
-        return np.array([self.res * x + self.min_x, self.max_y - y * self.res], dtype)
-
-    def get_pix_rgb(self, img, x, y):
-        """Bilinear interpolation to get pixel RGB value"""
-        # Get four neighboring integer coordinates
-        x0, y0 = int(np.floor(x)), int(np.floor(y))
-        x1, y1 = min(x0 + 1, img.shape[1] - 1), min(y0 + 1, img.shape[0] - 1)
-
-        # Calculate weights
-        dx, dy = x - x0, y - y0
-
-        # Boundary check
-        x0 = max(0, x0)
-        y0 = max(0, y0)
-
-        # Get RGB values of four neighboring points
-        top_left = img[y0, x0]
-        top_right = img[y0, x1]
-        bottom_left = img[y1, x0]
-        bottom_right = img[y1, x1]
-
-        # Bilinear interpolation calculation
-        interpolated = (
-            (1 - dx) * (1 - dy) * top_left
-            + dx * (1 - dy) * top_right
-            + (1 - dx) * dy * bottom_left
-            + dx * dy * bottom_right
-        )
-
-        return np.clip(interpolated, 0, 255).astype(int)
-
-    def trans_bev_to_img(self, bev_coords, img_coords, rgb_img, bev_img=None):
-        """Transform BEV coordinates back to image RGB channels"""
-        if bev_img is None:
-            bev_img = np.zeros((self.height, self.width, 4), dtype=np.uint8)
-
-        # Boundary condition judgment
-        cond = (
-            (bev_coords[:, 0] >= self.min_x)
-            & (bev_coords[:, 0] <= self.max_x)
-            & (bev_coords[:, 1] >= self.min_y)
-            & (bev_coords[:, 1] <= self.max_y)
-        )
-        bev_coords = bev_coords[cond]
-        img_coords = img_coords[cond]
-
-        # Convert BEV coordinates to pixel coordinates
-        pixel_coords = bev_coords.copy()
-        pixel_coords[:, 0] = (bev_coords[:, 0] - self.min_x) / self.res
-        pixel_coords[:, 1] = (self.max_y - bev_coords[:, 1]) / self.res
-
-        # Remove duplicate coordinate points
-        pixel_coords, idxs = np.unique(pixel_coords.round(), return_index=True, axis=0)
-        pixel_coords = pixel_coords.astype(int)
-        img_coords = img_coords[idxs]
-
-        # Update BEV image RGB values
-        for i in range(img_coords.shape[0]):
-            bev_img[pixel_coords[i][1], pixel_coords[i][0], :3] = rgb_img[
-                img_coords[i][1], img_coords[i][0]
-            ]
-            bev_img[pixel_coords[i][1], pixel_coords[i][0], 3] = 255
-
-        bev_img = np.array(bev_img, dtype=np.uint8)
-        return bev_img
-
 
 def load_cam_param(yaml_path: str):
-    """Load camera parameters from BEV4D calibration yaml"""
+    """Load camera parameters from BEV4D calibration yaml (支持polyn和ocam两种格式)"""
     with open(yaml_path, "r") as f:
         content = f.read()
     if "%YAML" in content:
         content = content.split("---", 1)[-1]
     data = yaml.safe_load(content)
 
-    # BEV4D format: use fx, fy, cx, cy
-    fx = float(data["fx"])
-    fy = float(data["fy"])
-    cx = float(data["cx"])
-    cy = float(data["cy"])
+    camera_model = data.get("camera_model", "polyn")
+
+    if camera_model == "ocam":
+        # OCAM模型：从affine_parameters提取内参
+        affine = data.get("affine_parameters", {})
+        cx = float(affine.get("cx", 960))
+        cy = float(affine.get("cy", 768))
+        ac = float(affine.get("ac", 1.0))
+
+        # 使用ac作为fx和fy的近似值
+        fx = fy = ac * 500  # 近似焦距
+
+        # OCAM的畸变系数设为0（因为OCAM用多项式模型，不是传统畸变）
+        dist_coeff = np.array([0, 0, 0, 0], dtype=np.float64)
+    else:
+        # polyn模型：使用fx, fy, cx, cy
+        fx = float(data["fx"])
+        fy = float(data["fy"])
+        cx = float(data["cx"])
+        cy = float(data["cy"])
+
+        dist_coeff = np.array(
+            [
+                data.get("kc2", 0),
+                data.get("kc3", 0),
+                data.get("kc4", 0),
+                data.get("kc5", 0),
+            ],
+            dtype=np.float64,
+        )
 
     intrinsic = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
-    dist_coeff = np.array(
-        [
-            data.get("kc2", 0),
-            data.get("kc3", 0),
-            data.get("kc4", 0),
-            data.get("kc5", 0),
-        ],
-        dtype=np.float64,
-    )
 
     r_s2b = np.array(data["r_s2b"], dtype=np.float64)
     t_s2b = np.array(data["t_s2b"], dtype=np.float64)
@@ -318,13 +263,10 @@ def load_cam_param(yaml_path: str):
     T_c2b[:3, :3] = R_c2b
     T_c2b[:3, 3] = t_s2b
 
-    # T_b2c: body -> camera
-    T_b2c = np.linalg.inv(T_c2b)
-
     return {
         "intrinsic": intrinsic,
         "distCoeff": dist_coeff,
-        "image_shape": (int(data["height"]), int(data["width"])),
+        "image_shape": (int(data["width"]), int(data["height"])),  # [w, h] 与速腾ImageSize一致
         "extrinsic": T_c2b,
     }
 
