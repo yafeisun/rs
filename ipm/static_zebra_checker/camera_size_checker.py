@@ -22,8 +22,8 @@ def get_camera_actual_size(camera_dir: str) -> Tuple[int, int]:
     """
     camera_path = Path(camera_dir)
     
-    # 获取第一张图片
-    images = sorted([f for f in camera_path.glob('*.jpg')])
+    # 获取第一张图片（支持 jpg 和 jpeg 格式）
+    images = sorted([f for f in camera_path.glob('*.jpg')] + [f for f in camera_path.glob('*.jpeg')])
     
     if not images:
         raise ValueError(f"未找到图片文件: {camera_dir}")

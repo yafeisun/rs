@@ -90,7 +90,6 @@ class BevProjector:
                 self.trans_bev_to_img_(bev_coords, alpha=1.0, bev_img=bev_img, color=np.array(self.color_list[i]))
         # bev_img = self.draw_coor_sys(bev_img)
         bev_img = self.draw_grid(bev_img)
-<<<<<<< HEAD
         return bev_img
     
     def run(self, img_list, cam_name_list, det_results):
@@ -114,8 +113,6 @@ class BevProjector:
                 self.trans_bev_to_img_(bev_coords, alpha=1.0, bev_img=bev_img, color=np.array(self.color_list[i]))
         # bev_img = self.draw_coor_sys(bev_img)
         bev_img = self.draw_grid(bev_img)
-=======
->>>>>>> a849965d029b72b048ba92c01a702d045ebef069
         return bev_img
 
 
@@ -237,7 +234,6 @@ class BevProjector:
 
 
     def trans_bev_to_img(self, bev_coords, img_coords, rgb_img, cam_name, bev_img=None):
-<<<<<<< HEAD
         r"""
         Transform BEV coordinates to image coordinates and map RGB values.
 
@@ -250,20 +246,6 @@ class BevProjector:
 
         Returns:
             np.ndarray: BEV image, shape (height, width, 3), RGB values
-=======
-        """
-        将BEV坐标下的点投影回图像RGB通道
-
-        Args:
-            bev_coords (np.ndarray): BEV坐标点(N, 2)形状，N个点的x坐标和y坐标
-            img_coords (np.ndarray): BEV对应图像坐标点(N, 2)形状，N个点的u坐标和v坐标
-            rgb_img (np.ndarray): 对应图像RGB通道(height, width, 3)形状，height为高，width为宽，3为RGB通道
-            cam_name (str): 相机名称如'cam_front_right'
-            bev_img (np.ndarray, optional): 输出图像。如果为None
-
-        Returns:
-            np.ndarray: 输出图像(height, width, 3)形状，height为输出图像高，width为输出图像宽，3为RGB通道
->>>>>>> a849965d029b72b048ba92c01a702d045ebef069
         """
 
         if bev_img is None:

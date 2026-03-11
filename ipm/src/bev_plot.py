@@ -80,53 +80,7 @@ class BevPlot:
             return self.max_x * 2 / 3, self.max_y - 1
         else:
             print('cam_name error')
-<<<<<<< HEAD
-            return None    
-    
-=======
             return None
-        
-    def init_param(self, cam_param_path):
-        self.cam_param = load_cam_param(cam_param_path, v6=False)
-        for name in self.cam_names:
-            dist = AntiDistortion(self.cam_param[name]['intrinsic'], self.cam_param[name]['distCoeff'],
-                                  self.cam_param[name]['image_shape'])
-            self.cam_param[name]['intrinsic'] = dist.new_K  # only run once, update intrinsic
-            intrinsic, extrinsic, image_shape, dist_coeff = self.cam_param[name]['intrinsic'], \
-                self.cam_param[name]['extrinsic'], \
-                self.cam_param[name]['image_shape'], \
-                self.cam_param[name]['distCoeff']
-            self.distortions[name] = dist
-            trans = PointsTrans(intrinsic, extrinsic, image_shape)
-            self.trans_dict[name] = trans
-
-    def get_txt_coor(self, cam_name):
-        if cam_name == 'cam_around_back':
-            return self.min_x + 1, 0
-        elif cam_name == 'cam_around_front':
-            return 5, 0
-        elif cam_name == 'cam_around_left':
-            return 0, self.min_y + 2
-        elif cam_name == 'cam_around_right':
-            return 0, self.max_y - 2
-        elif cam_name == 'cam_front_left':
-            return self.max_x - 4, 0
-        elif cam_name == 'cam_side_left_front':
-            return 3, self.min_y + 1
-        elif cam_name == 'cam_side_left_back':
-            return self.min_x / 2, self.min_y + 1
-        elif cam_name == 'cam_side_right_front':
-            return 3, self.max_y - 1
-        elif cam_name == 'cam_side_right_back':
-            return self.min_x / 2, self.max_y - 1
-        elif cam_name == 'cam_back':
-            return self.min_x + 1, 0
-        elif cam_name == 'cam_front_right':
-            return self.max_x * 2 / 3, self.max_y - 1
-        else:
-            print('cam_name error')
-            return None
-
 
     def gen_grid_points(self, rows, cols):
         x = np.linspace(self.min_x, self.max_x, rows)
@@ -365,21 +319,6 @@ class BevPlot:
         else:
             print('cam_name error')
             return None
-        
->>>>>>> a849965d029b72b048ba92c01a702d045ebef069
-    def init_param(self, cam_param_path):
-        self.cam_param = load_cam_param(cam_param_path, v6=False)
-        for name in self.cam_names:
-            dist = AntiDistortion(self.cam_param[name]['intrinsic'], self.cam_param[name]['distCoeff'],
-                                  self.cam_param[name]['image_shape'])
-            self.cam_param[name]['intrinsic'] = dist.new_K  # only run once, update intrinsic
-            intrinsic, extrinsic, image_shape, dist_coeff = self.cam_param[name]['intrinsic'], \
-                self.cam_param[name]['extrinsic'], \
-                self.cam_param[name]['image_shape'], \
-                self.cam_param[name]['distCoeff']
-            self.distortions[name] = dist
-            trans = PointsTrans(intrinsic, extrinsic, image_shape)
-            self.trans_dict[name] = trans
 
     def get_txt_coor(self, cam_name):
         if cam_name == 'cam_around_back':

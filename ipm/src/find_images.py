@@ -28,7 +28,7 @@ class ImagesTimeAligner:
     cam_tss = {}  # {cam: [ts]}
     max_acc = (0.2, 0.5)
 
-    def __init__(self, bag_dir, frm_nums: Tuple[int], view_types: Tuple[str], suffix='.jpg'):
+    def __init__(self, bag_dir, frm_nums: Tuple[int], view_types: Tuple[str], suffix='.jpeg'):
         self.bag_dir = bag_dir
         self.suffix = suffix
         self.total_frames = 0
