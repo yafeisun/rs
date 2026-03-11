@@ -151,16 +151,35 @@ node_output/ipm/
 
 ### 技术细节
 
-- **投影策略**：全投影模式，所有4路鱼眼都投影到整个BEV区域，后投影覆盖先投影
+- **投影策略**：反向投影（BEV网格点→像素坐标），所有4路鱼眼全投影，后覆盖先
 - **投影顺序**：前鱼眼 → 后鱼眼 → 左鱼眼 → 右鱼眼
-- **去畸变**：使用 `cv2.fisheye.initUndistortRectifyMap` 处理鱼眼畸变
-- **BEV范围**：X[-20m, 30m], Y[-10m, 10m]，分辨率0.05m/pixel
+- **去畸变**：使用 `cv2.fisheye.initUndistortRectifyMap` + `cv2.getOptimalNewCameraMatrix`
+- **图像上采样**：2倍上采样提升精度
+- **BEV范围**：X[-20m, 30m], Y[-10m, 10m]
+- **分辨率**：0.01m/pixel（生成5000x2000图像，约7-8MB）
 - **坐标系**：FLU（X前，Y左，Z上），原点在车辆后轴中心
 - **文件命名**：使用前鱼眼（camera_front_fisheye）的时间戳
 
 ### 参考实现
 
 完全参考速腾IPM的SOTA实现方式，确保拼接效果无黑色空洞。
+
+### 数据依赖
+
+IPM生成完全依赖转换后的BEV4D格式，不需要原始数据：
+
+**依赖的数据**：
+- `calibration/camera/{camera_name}.yaml` - 相机标定参数
+  - 内参：`fx, fy, cx, cy`
+  - 畸变系数：`kc2, kc3, kc4, kc5`
+  - 外参：`r_s2b, t_s2b`
+  - 图像尺寸：`width, height`
+- `sensor_data/camera/{camera_name}/{timestamp}.jpeg` - 鱼眼图像
+
+**不依赖**：
+- ❌ 原始的 `car_*.yaml`
+- ❌ 原始的 ROS Bag
+- ❌ 任何转换前的数据
 
 ---
 

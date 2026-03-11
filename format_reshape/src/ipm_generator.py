@@ -27,7 +27,7 @@ FISHEYE_CAM_NAMES = [
 # BEV范围（与Robosense一致）
 BEV_MIN_X, BEV_MAX_X = -20.0, 30.0
 BEV_MIN_Y, BEV_MAX_Y = -10.0, 10.0
-BEV_RESOLUTION = 0.05  # 米/像素
+BEV_RESOLUTION = 0.01  # 米/像素（与Robosense一致，生成5000x2000图像）
 
 
 class AntiDistortion:
@@ -132,8 +132,11 @@ class BevProjector:
         self.min_x, self.max_x = BEV_MIN_X, BEV_MAX_X
         self.min_y, self.max_y = BEV_MIN_Y, BEV_MAX_Y
         self.res = BEV_RESOLUTION
-        self.width = int(math.ceil((self.max_x - self.min_x) / self.res)) + 1
-        self.height = int(math.ceil((self.max_y - self.min_y) / self.res)) + 1
+        # 速腾实现：pixel_rows = X方向，pixel_cols = Y方向
+        # X方向: [-20, 30] = 50m, Y方向: [-10, 10] = 20m
+        self.pixel_rows = int(math.ceil((self.max_x - self.min_x) / self.res))  # X方向 = 50m/0.01 = 5000
+        self.pixel_cols = int(math.ceil((self.max_y - self.min_y) / self.res))  # Y方向 = 20m/0.01 = 2000
+        self.up_sample = 2
 
         self.cam_param = {}
         self.distortions = {}
@@ -162,20 +165,47 @@ class BevProjector:
             self.trans_dict[name] = trans
 
     def run(self, img_list, cam_name_list):
-        """运行IPM投影，所有相机全投影，后覆盖先"""
-        bev_img = np.zeros((self.height, self.width, 4), dtype=np.uint8)
+        """运行IPM投影，所有相机全投影，后覆盖先（使用反向投影）"""
+        bev_img = np.zeros((self.pixel_rows, self.pixel_cols, 4), dtype=np.uint8)
+
+        # 生成BEV网格点（与Robosense一致）
+        x = np.linspace(self.min_x, self.max_x, self.pixel_rows)
+        y = np.linspace(self.min_y, self.max_y, self.pixel_cols)
+        X, Y = np.meshgrid(x, y, indexing='ij')
+        grid_points = np.stack([X.ravel(), Y.ravel()], axis=1)
 
         for img_path, cam_name in zip(img_list, cam_name_list):
             rgb_img = cv2.imread(img_path)
             if rgb_img is None:
                 continue
 
+            # 去畸变
             rgb_img = self.distortions[cam_name].anti(rgb_img)
 
-            y_coors, x_coors = np.mgrid[0 : rgb_img.shape[0], 0 : rgb_img.shape[1]]
-            coords = np.dstack((x_coors, y_coors)).reshape(-1, 2)
-            bev_coords, coords = self.trans_dict[cam_name].pixel_to_bev(coords)
-            bev_img = self.trans_bev_to_img(bev_coords, coords, rgb_img, bev_img)
+            # 上采样
+            if self.up_sample != 1:
+                new_h = rgb_img.shape[0] * self.up_sample
+                new_w = rgb_img.shape[1] * self.up_sample
+                rgb_img = cv2.resize(rgb_img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+            # BEV点反投影到像素坐标
+            pixel, mask = self.trans_dict[cam_name].bev_to_pixel_mask(grid_points)
+            pixel *= self.up_sample  # 考虑上采样
+            valid_pixel = pixel[:, mask]
+            uv = valid_pixel.round().astype(np.int32).T
+
+            # 从上采样图像中取色
+            pt_color = rgb_img[uv[:, 1], uv[:, 0]]
+            pt_color = np.hstack((pt_color, np.full((pt_color.shape[0], 1), 255)))
+
+            # 填充到BEV图像
+            mask_2d = mask.reshape([self.pixel_rows, self.pixel_cols])
+            bev_img[mask_2d] = pt_color
+
+        # 旋转90度逆时针（与速腾一致）
+        # 原始: (5000行, 2000列) = (高, 宽)
+        # 逆时针旋转后: (2000行, 5000列) = 高2000 x 宽5000
+        bev_img = cv2.rotate(bev_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
         return bev_img
 
@@ -426,4 +456,5 @@ if __name__ == "__main__":
         help="Max frames to generate (default: all)",
     )
     args = parser.parse_args()
+
     generate_ipm(args.target_dir, args.max_frames)
